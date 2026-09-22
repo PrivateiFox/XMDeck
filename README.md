@@ -120,4 +120,5 @@ uv run mypy backend/ tests/ main.py
 
 ## 📄 License
 
-Distributed under the [MIT License](LICENSE).
+Distributed under the [GNU General Public License v3.0](LICENSE).
+
