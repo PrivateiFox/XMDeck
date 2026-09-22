@@ -203,6 +203,10 @@ def scan_all_bluetooth_devices() -> list[dict[str, Any]]:
                             m = re.search(r"\(([0-9a-fA-F-]{36})\)", line_s)
                             if m:
                                 dev["uuids"].append(m.group(1).lower())
+                        elif "Battery Percentage:" in line_s:
+                            m_bat = re.search(r"\((\d+)\)", line_s)
+                            if m_bat:
+                                dev["battery_level"] = int(m_bat.group(1))
             except Exception as e:
                 logger.debug("bluetoothctl info %s failed: %s", mac, e)
 
@@ -423,6 +427,19 @@ class SonyConnection:
                     self._reader_task = asyncio.create_task(self._socket_reader_loop())
 
                     logger.info("Successfully connected to Sony MDR at %s (channel %d)", mac, ch)
+
+                    # Populate initial battery from BlueZ if available
+                    if self.battery_status.battery_level is None:
+                        for d in scan_all_bluetooth_devices():
+                            if d.get("mac") == mac and d.get("battery_level") is not None:
+                                self.battery_status = BatteryStatus(
+                                    battery_level=d["battery_level"], charging=False
+                                )
+                                logger.info(
+                                    "Initial battery populated from BlueZ: %d%%",
+                                    d["battery_level"],
+                                )
+                                break
 
                     # Query initial states
                     asyncio.create_task(self._query_initial_states())

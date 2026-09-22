@@ -50,10 +50,10 @@ try:
     print(f"    Raw bytes received ({len(data)}B): {data.hex(' ')}")
     frames = parser.feed(data)
     for f in frames:
-        print(f"    Decoded Frame: type=0x{f.data_type:02X}, seq={f.seq}, payload={f.payload.hex(' ')}")
+        print(f"    Decoded: type=0x{f.data_type:02X}, seq={f.seq}, payload={f.payload.hex(' ')}")
         battery = parse_battery_status(f.payload)
         if battery.battery_level is not None:
-            print(f"    >>> BATTERY DETECTED: {battery.battery_level}% (Charging: {battery.charging}) <<<")
+            print(f"    >>> BATTERY: {battery.battery_level}% (Charging: {battery.charging}) <<<")
 
     time.sleep(0.2)
 
@@ -67,10 +67,10 @@ try:
     print(f"    Raw bytes received ({len(data)}B): {data.hex(' ')}")
     frames = parser.feed(data)
     for f in frames:
-        print(f"    Decoded Frame: type=0x{f.data_type:02X}, seq={f.seq}, payload={f.payload.hex(' ')}")
+        print(f"    Decoded: type=0x{f.data_type:02X}, seq={f.seq}, payload={f.payload.hex(' ')}")
         anc = parse_anc_state(f.payload)
         if anc.mode is not None:
-            print(f"    >>> ANC STATE: mode={anc.mode}, ambient_level={anc.ambient_level}, voice_focus={anc.voice_focus} <<<")
+            print(f"    >>> ANC: mode={anc.mode}, lvl={anc.ambient_level} <<<")
 
     sock.close()
     print("\n==================================================")
