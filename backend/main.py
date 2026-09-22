@@ -76,6 +76,17 @@ class Plugin:
                     mac, name = await asyncio.get_running_loop().run_in_executor(
                         None, find_connected_sony_device
                     )
+                    if not mac:
+                        # Fallback: check all paired Sony Classic devices
+                        devs = await asyncio.get_running_loop().run_in_executor(
+                            None, scan_all_bluetooth_devices
+                        )
+                        for d in devs:
+                            if d.get("is_sony") and not d.get("is_le"):
+                                mac = d["mac"]
+                                name = d.get("name")
+                                break
+
                     if mac:
                         logger.info(
                             "Found candidate Sony device: %s (%s). Attempting connect...",
@@ -156,6 +167,27 @@ class Plugin:
         logger.info("Manual disconnect requested")
         await self.conn.disconnect()
         return True
+
+    async def trigger_connect(self) -> dict[str, Any]:
+        """Trigger an immediate scan and connection attempt to Sony headphones."""
+        logger.info("trigger_connect invoked from UI")
+        loop = asyncio.get_running_loop()
+        mac, name = await loop.run_in_executor(None, find_connected_sony_device)
+        if not mac:
+            devs = await loop.run_in_executor(None, scan_all_bluetooth_devices)
+            for d in devs:
+                if d.get("is_sony") and not d.get("is_le"):
+                    mac = d["mac"]
+                    name = d.get("name")
+                    break
+
+        if mac:
+            logger.info("trigger_connect: Found Sony device %s (%s). Connecting...", name, mac)
+            await self.conn.connect(mac, name=name)
+        else:
+            self.conn.last_error = "No Sony headphones found in Bluetooth scan"
+
+        return self._build_connection_status_dict()
 
     async def scan_devices(self) -> list[dict[str, Any]]:
         """Scan and return all Bluetooth devices found on the system."""
