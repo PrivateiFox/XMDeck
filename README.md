@@ -39,23 +39,9 @@ Tested and confirmed compatible with Sony MDR protocol:
 
 ## 📸 Screenshots
 
-*(To take a screenshot on your Steam Deck, press **STEAM + R1**)*
-
-<!-- Replace with your screenshot -->
-```
-+------------------------------------------+
-|  Sony WH/WF Headphones                   |
-|  WH-1000XM6                    60% [==]  |
-|                                          |
-|  Noise Control:                          |
-|  [ Noise Cancelling |v]                  |
-|                                          |
-|  Ambient Sound Level: [======|----] 12   |
-|  [x] Focus on Voice                      |
-|                                          |
-|  [x] Speak-to-Chat                       |
-+------------------------------------------+
-```
+<p align="center">
+  <img src="assets/screenshot.jpg" alt="XMDeck running on Steam Deck QAM" width="750" />
+</p>
 
 ---
 
