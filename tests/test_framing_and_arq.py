@@ -299,19 +299,19 @@ class TestMessages:
         # Cancelling mode
         cmd_nc = build_set_anc_mode("cancelling")
         assert cmd_nc[0] == CommandTable1.NCASM_SET_PARAM
-        assert cmd_nc[3] == 0x00  # Total effect ON
+        assert cmd_nc[3] == 0x01  # Total effect ON
         assert cmd_nc[4] == 0x00  # NC mode
 
         # Ambient mode, level 15, voice focus True
         cmd_amb = build_set_ambient_sound(level=15, voice_focus=True)
-        assert cmd_amb[3] == 0x00  # Total effect ON
+        assert cmd_amb[3] == 0x01  # Total effect ON
         assert cmd_amb[4] == 0x01  # ASM mode
         assert cmd_amb[5] == 0x01  # Focus on Voice
         assert cmd_amb[6] == 15  # Level 15
 
         # Off mode
         cmd_off = build_set_anc_mode("off")
-        assert cmd_off[3] == 0x01  # Total effect OFF
+        assert cmd_off[3] == 0x00  # Total effect OFF
 
         # Parse ANC notification
         ntfy = bytes(
@@ -319,16 +319,20 @@ class TestMessages:
                 CommandTable1.NCASM_NTFY_PARAM,
                 NcAsmInquiredType.MODE_NC_ASM_DUAL_NC_MODE_SWITCH_AND_ASM_SEAMLESS,
                 0x01,  # CHANGED
-                0x00,  # Total effect ON
+                0x01,  # Total effect ON
                 NcAsmMode.ASM,
                 0x01,  # VOICE
                 12,  # Level
             ]
         )
         state = parse_anc_state(ntfy)
+        assert state is not None
         assert state.mode == "ambient"
         assert state.ambient_level == 12
         assert state.voice_focus is True
+
+        # Non-ANC packet returns None
+        assert parse_anc_state(b"\x21\x00") is None
 
     def test_speak_to_chat_build_and_parse(self) -> None:
         query = build_speak_to_chat_query()

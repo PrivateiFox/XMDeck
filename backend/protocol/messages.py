@@ -76,8 +76,8 @@ class NcAsmInquiredType(IntEnum):
 class NcAsmOnOffValue(IntEnum):
     """Total effect on/off."""
 
-    ON = 0x00
-    OFF = 0x01
+    OFF = 0x00
+    ON = 0x01
 
 
 class NcAsmMode(IntEnum):
@@ -209,37 +209,32 @@ def build_anc_query(inquired_type: NcAsmInquiredType = DEFAULT_NC_ASM_TYPE) -> b
     return bytes([CommandTable1.NCASM_GET_PARAM, inquired_type])
 
 
-def parse_anc_state(payload: bytes) -> ANCState:
+def parse_anc_state(payload: bytes) -> ANCState | None:
     """Parse Sony MDR ANC/Ambient response or notification payload."""
-    # Defaults in case of incomplete or unparseable payload
-    default_state = ANCState(mode="cancelling", ambient_level=1, voice_focus=False)
-    if len(payload) < 2:
-        return default_state
+    if len(payload) < 7:
+        return None
 
     cmd = payload[0]
     if cmd not in (CommandTable1.NCASM_RET_PARAM, CommandTable1.NCASM_NTFY_PARAM):
-        return default_state
+        return None
 
     # Minimum struct length: cmd(1) + type(1) + status(1) + onOff(1) + mode(1) + asm(1) + val(1) = 7
-    if len(payload) >= 7:
-        total_effect = payload[3]
-        nc_mode = payload[4]
-        asm_mode = payload[5]
-        asm_level = payload[6]
+    total_effect = payload[3]
+    nc_mode = payload[4]
+    asm_mode = payload[5]
+    asm_level = payload[6]
 
-        voice_focus = asm_mode == AmbientSoundMode.VOICE
-        clamped_level = max(1, min(20, asm_level)) if asm_level > 0 else 1
+    voice_focus = asm_mode == AmbientSoundMode.VOICE
+    clamped_level = max(1, min(20, asm_level)) if asm_level > 0 else 1
 
-        if total_effect == NcAsmOnOffValue.OFF:
-            mode: ANCModeLiteral = "off"
-        elif nc_mode == NcAsmMode.NC:
-            mode = "cancelling"
-        else:
-            mode = "ambient"
+    if total_effect == NcAsmOnOffValue.OFF:
+        mode: ANCModeLiteral = "off"
+    elif nc_mode == NcAsmMode.NC:
+        mode = "cancelling"
+    else:
+        mode = "ambient"
 
-        return ANCState(mode=mode, ambient_level=clamped_level, voice_focus=voice_focus)
-
-    return default_state
+    return ANCState(mode=mode, ambient_level=clamped_level, voice_focus=voice_focus)
 
 
 def build_set_anc_mode(
@@ -306,14 +301,17 @@ def build_speak_to_chat_query() -> bytes:
     return bytes([CommandTable1.SYSTEM_GET_PARAM, SystemInquiredType.SMART_TALKING_MODE_TYPE2])
 
 
-def parse_speak_to_chat(payload: bytes) -> bool:
+def parse_speak_to_chat(payload: bytes) -> bool | None:
     """Parse Sony MDR Speak-to-Chat status from response or notification."""
     if len(payload) < 3:
-        return False
+        return None
 
     cmd = payload[0]
     if cmd not in (CommandTable1.SYSTEM_RET_PARAM, CommandTable1.SYSTEM_NTFY_PARAM):
-        return False
+        return None
+
+    if payload[1] != SystemInquiredType.SMART_TALKING_MODE_TYPE2:
+        return None
 
     on_off = payload[2]
     return on_off == OnOffSettingValue.ON
