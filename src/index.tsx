@@ -159,6 +159,7 @@ const XMDeckPanel: FC = () => {
   const handleManualScan = async () => {
     setLoading(true);
     try {
+      await call("trigger_connect");
       await fetchDevices();
       await refreshStatus();
     } catch (e) {
