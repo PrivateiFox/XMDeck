@@ -72,7 +72,7 @@ class TestSonyConnection:
                 CommandTable1.NCASM_NTFY_PARAM,
                 NcAsmInquiredType.MODE_NC_ASM_DUAL_NC_MODE_SWITCH_AND_ASM_SEAMLESS,
                 0x01,  # CHANGED
-                0x00,  # Total effect ON
+                0x01,  # Total effect ON
                 NcAsmMode.ASM,
                 0x01,  # Focus on Voice
                 14,  # Ambient level

@@ -624,14 +624,15 @@ class SonyConnection:
 
         # Check for ANC & Ambient Sound
         new_anc = parse_anc_state(payload)
-        if new_anc.mode is not None:
+        if new_anc is not None:
             self.anc_state = new_anc
             self._notify("anc_updated", self.anc_state)
 
         # Check for Speak-to-Chat
         new_stc = parse_speak_to_chat(payload)
-        self.speak_to_chat = new_stc
-        self._notify("stc_updated", self.speak_to_chat)
+        if new_stc is not None:
+            self.speak_to_chat = new_stc
+            self._notify("stc_updated", self.speak_to_chat)
 
     async def _query_initial_states(self) -> None:
         """Query initial battery, ANC, and Speak-to-Chat status after connecting."""
@@ -664,9 +665,12 @@ class SonyConnection:
 
     async def set_anc_mode(self, mode: str) -> bool:
         """Set ANC mode ('cancelling', 'ambient', or 'off')."""
+        amb_level = self.anc_state.ambient_level
+        if mode == "ambient" and amb_level <= 1:
+            amb_level = 10
         cmd = build_set_anc_mode(
             mode,
-            ambient_level=self.anc_state.ambient_level,
+            ambient_level=amb_level,
             voice_focus=self.anc_state.voice_focus,
         )
         try:
@@ -675,7 +679,7 @@ class SonyConnection:
             valid_mode: Any = mode if mode in ("cancelling", "ambient", "off") else "cancelling"
             self.anc_state = ANCState(
                 mode=valid_mode,
-                ambient_level=self.anc_state.ambient_level,
+                ambient_level=amb_level,
                 voice_focus=self.anc_state.voice_focus,
             )
             self._notify("anc_updated", self.anc_state)
