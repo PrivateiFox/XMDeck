@@ -1,0 +1,10 @@
+{
+  "name": "XMDeck",
+  "author": "PrivateiFox",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["bluetooth", "battery", "sony", "headphones", "anc", "ambient"],
+    "description": "Monitor and control Sony WH/WF-1000XM headphones directly from the Steam Quick Access Menu."
+  }
+}
