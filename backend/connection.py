@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shutil
 import socket
 import subprocess
 from typing import Any, Callable
@@ -70,10 +72,27 @@ FALLBACK_RFCOMM_CHANNELS = (9, 8, 1, 2, 3, 5, 7, 10, 11)
 # Regex to validate Bluetooth MAC addresses (e.g. 00:11:22:33:44:55)
 MAC_REGEX = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$")
 
+AF_BLUETOOTH = getattr(socket, "AF_BLUETOOTH", 31)
+BTPROTO_RFCOMM = getattr(socket, "BTPROTO_RFCOMM", 3)
+AF_UNIX = getattr(socket, "AF_UNIX", 1)
+
 
 def is_rfcomm_supported() -> bool:
-    """Check if native AF_BLUETOOTH RFCOMM sockets are supported in this Python runtime."""
-    return hasattr(socket, "AF_BLUETOOTH") and hasattr(socket, "BTPROTO_RFCOMM")
+    """Check if native AF_BLUETOOTH RFCOMM sockets or system python3 bridge are available."""
+    # 1. Native in-process socket check
+    try:
+        s = socket.socket(AF_BLUETOOTH, socket.SOCK_STREAM, BTPROTO_RFCOMM)
+        s.close()
+        return True
+    except Exception:
+        pass
+
+    # 2. System python3 bridge check (SteamOS / Linux)
+    python_bin = shutil.which("python3") or "/usr/bin/python3"
+    if os.path.exists(python_bin) and hasattr(socket, "AF_UNIX"):
+        return True
+
+    return False
 
 
 def scan_all_bluetooth_devices() -> list[dict[str, Any]]:
@@ -333,6 +352,7 @@ class SonyConnection:
         self.speak_to_chat: bool = False
 
         self._socket: socket.socket | None = None
+        self._bridge_proc: subprocess.Popen[str] | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._parser = StreamParser()
         self._arq = AsyncARQController()
@@ -482,11 +502,62 @@ class SonyConnection:
             await self.disconnect()
             return False
 
-    def _sync_connect(self, mac: str, channel: int) -> socket.socket:
-        sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+    def _bridge_connect(self, mac: str, channel: int) -> socket.socket:
+        bridge_script = os.path.join(os.path.dirname(__file__), "bridge.py")
+        python_bin = shutil.which("python3") or "/usr/bin/python3"
+        sock_path = f"/tmp/xmdeck_{mac.replace(':', '')}.sock"
+
+        if os.path.exists(sock_path):
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
+
+        logger.info(
+            "Launching python3 RFCOMM bridge for %s ch %d via %s...",
+            mac,
+            channel,
+            python_bin,
+        )
+        proc = subprocess.Popen(
+            [python_bin, bridge_script, mac, str(channel), sock_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self._bridge_proc = proc
+
+        ready_line = ""
+        if proc.stdout:
+            ready_line = proc.stdout.readline().strip()
+
+        if ready_line != "READY":
+            err = proc.stderr.read() if proc.stderr else ""
+            proc.terminate()
+            self._bridge_proc = None
+            raise OSError(f"Bridge connection failed for {mac} ch {channel}: {ready_line} {err}")
+
+        # Connect to Unix domain socket
+        sock = socket.socket(AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(2.0)
-        sock.connect((mac, channel))
+        sock.connect(sock_path)
+        logger.info("Connected to Sony MDR via /usr/bin/python3 bridge on channel %d", channel)
         return sock
+
+    def _sync_connect(self, mac: str, channel: int) -> socket.socket:
+        # First attempt native in-process RFCOMM socket
+        try:
+            sock = socket.socket(AF_BLUETOOTH, socket.SOCK_STREAM, BTPROTO_RFCOMM)
+            sock.settimeout(2.0)
+            sock.connect((mac, channel))
+            logger.info("Connected via native AF_BLUETOOTH RFCOMM socket")
+            return sock
+        except Exception as e:
+            logger.info("Native RFCOMM socket connect failed (%s), trying python3 bridge...", e)
+
+        # Fallback to system python3 bridge
+        return self._bridge_connect(mac, channel)
 
     async def disconnect(self) -> None:
         """Close RFCOMM socket connection and clean up reader task."""
@@ -501,6 +572,14 @@ class SonyConnection:
             except OSError:
                 pass
             self._socket = None
+
+        if self._bridge_proc is not None:
+            try:
+                self._bridge_proc.terminate()
+                self._bridge_proc.wait(timeout=1.0)
+            except Exception:
+                pass
+            self._bridge_proc = None
 
         self._notify("connected", False)
 
