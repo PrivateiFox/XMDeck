@@ -7,7 +7,13 @@ import { call, addEventListener, removeEventListener } from "@decky/api";
 import { FC, useState, useEffect, useCallback } from "react";
 import { FaHeadphones } from "react-icons/fa";
 
-import { ANCMode, ANCState, ConnectionStatus, PluginStateUpdate } from "./types";
+import {
+  ANCMode,
+  ANCState,
+  BluetoothDeviceInfo,
+  ConnectionStatus,
+  PluginStateUpdate,
+} from "./types";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { BatterySection } from "./components/BatteryStatus";
 import { ANCControls } from "./components/ANCControls";
@@ -21,8 +27,10 @@ const XMDeckPanel: FC = () => {
     battery_level: null,
     charging: false,
     is_busy: false,
+    last_error: null,
   });
 
+  const [devices, setDevices] = useState<BluetoothDeviceInfo[]>([]);
   const [anc, setAnc] = useState<ANCState>({
     mode: "cancelling",
     ambient_level: 1,
@@ -51,8 +59,20 @@ const XMDeckPanel: FC = () => {
     }
   }, []);
 
+  const fetchDevices = useCallback(async () => {
+    try {
+      const scanned = await call<[], BluetoothDeviceInfo[]>("scan_devices");
+      if (scanned) {
+        setDevices(scanned);
+      }
+    } catch (e) {
+      console.error("[XMDeck] Failed scanning Bluetooth devices:", e);
+    }
+  }, []);
+
   useEffect(() => {
     refreshStatus();
+    fetchDevices();
 
     const onStateChanged = (update: PluginStateUpdate) => {
       if (update.connection) {
@@ -69,13 +89,18 @@ const XMDeckPanel: FC = () => {
     addEventListener<[PluginStateUpdate]>("xmdeck_state_changed", onStateChanged);
 
     // Poll periodically as fallback
-    const interval = setInterval(refreshStatus, 4000);
+    const interval = setInterval(() => {
+      refreshStatus();
+      if (!connection.connected) {
+        fetchDevices();
+      }
+    }, 4000);
 
     return () => {
       removeEventListener("xmdeck_state_changed", onStateChanged);
       clearInterval(interval);
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, fetchDevices, connection.connected]);
 
   // Handlers with optimistic UI updates
   const handleModeChange = async (mode: ANCMode) => {
@@ -119,9 +144,39 @@ const XMDeckPanel: FC = () => {
     }
   };
 
+  const handleManualConnect = async (mac: string) => {
+    setLoading(true);
+    try {
+      await call<[string], boolean>("connect_device", mac);
+      await refreshStatus();
+    } catch (e) {
+      console.error("[XMDeck] Manual connect failed:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleManualScan = async () => {
+    setLoading(true);
+    try {
+      await fetchDevices();
+      await refreshStatus();
+    } catch (e) {
+      console.error("[XMDeck] Manual scan failed:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <PanelSection title="Sony WH/WF Headphones">
-      <ConnectionBanner status={connection} />
+      <ConnectionBanner
+        status={connection}
+        devices={devices}
+        onConnect={handleManualConnect}
+        onScan={handleManualScan}
+        disabled={loading}
+      />
 
       {connection.connected && (
         <>

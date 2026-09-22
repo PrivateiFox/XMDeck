@@ -3,23 +3,30 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 
-from .connection import SonyConnection, find_connected_sony_device
+from .connection import (
+    SonyConnection,
+    find_connected_sony_device,
+    is_rfcomm_supported,
+    scan_all_bluetooth_devices,
+)
+from .logger import logger, setup_logging
 
 try:
     import decky
 except ImportError:
-    decky = None  # type: ignore[assignment]
-
-logger = logging.getLogger("xmdeck.main")
+    try:
+        import decky_plugin as decky  # type: ignore[import-not-found,no-redef]
+    except ImportError:
+        decky = None  # type: ignore[assignment]
 
 
 class Plugin:
     """XMDeck Decky Loader Plugin class."""
 
     def __init__(self) -> None:
+        setup_logging()
         self.conn = SonyConnection()
         self._poll_task: asyncio.Task[None] | None = None
         self._running: bool = False
@@ -71,17 +78,27 @@ class Plugin:
                     )
                     if mac:
                         logger.info(
-                            "Found connected Sony device: %s (%s). Connecting...", name, mac
+                            "Found candidate Sony device: %s (%s). Attempting connect...",
+                            name,
+                            mac,
                         )
-                        await self.conn.connect(mac, name=name)
+                        connected = await self.conn.connect(mac, name=name)
+                        if connected:
+                            logger.info(
+                                "Connected successfully to %s on channel %s",
+                                mac,
+                                self.conn.channel,
+                            )
+                        else:
+                            logger.warning("Failed to connect to %s: %s", mac, self.conn.last_error)
 
-                # Wait before next poll interval
-                await asyncio.sleep(5.0 if self.conn.connected else 3.0)
+                # Wait before next poll interval: 5s if connected, 4s if trying to connect
+                await asyncio.sleep(5.0 if self.conn.connected else 4.0)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug("Error in auto-discovery loop: %s", e)
+                logger.exception("Error in auto-discovery loop: %s", e)
                 await asyncio.sleep(4.0)
 
     # -----------------------------------------------------------------------
@@ -92,9 +109,12 @@ class Plugin:
         return {
             "connected": self.conn.connected,
             "device_name": self.conn.device_name if self.conn.connected else None,
+            "mac": self.conn.mac,
             "battery_level": self.conn.battery_status.battery_level,
             "charging": self.conn.battery_status.charging,
             "is_busy": self.conn.is_busy,
+            "last_error": self.conn.last_error,
+            "channel": self.conn.channel,
         }
 
     def _build_anc_dict(self) -> dict[str, Any]:
@@ -124,11 +144,34 @@ class Plugin:
         """Enable or disable Speak-to-Chat."""
         return await self.conn.set_speak_to_chat(enabled)
 
-    async def connect_device(self, mac: str, name: str | None = None) -> bool:
+    async def connect_device(
+        self, mac: str, name: str | None = None, channel: int | None = None
+    ) -> bool:
         """Manually trigger connection to a specific Bluetooth MAC."""
-        return await self.conn.connect(mac, name=name)
+        logger.info("Manual connection requested to MAC: %s (channel: %s)", mac, channel)
+        return await self.conn.connect(mac, channel=channel, name=name)
 
     async def disconnect_device(self) -> bool:
         """Manually disconnect active RFCOMM connection."""
+        logger.info("Manual disconnect requested")
         await self.conn.disconnect()
         return True
+
+    async def scan_devices(self) -> list[dict[str, Any]]:
+        """Scan and return all Bluetooth devices found on the system."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, scan_all_bluetooth_devices)
+
+    async def get_diagnostics(self) -> dict[str, Any]:
+        """Return full Bluetooth diagnostics and detected devices for UI troubleshooting."""
+        loop = asyncio.get_running_loop()
+        devices = await loop.run_in_executor(None, scan_all_bluetooth_devices)
+        return {
+            "connected": self.conn.connected,
+            "mac": self.conn.mac,
+            "device_name": self.conn.device_name,
+            "rfcomm_supported": is_rfcomm_supported(),
+            "last_error": self.conn.last_error,
+            "channel": self.conn.channel,
+            "devices": devices,
+        }

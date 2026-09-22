@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import MagicMock, patch
 
-from backend.connection import SonyConnection
+from backend.connection import (
+    SonyConnection,
+    find_connected_sony_device,
+    find_rfcomm_channel,
+)
 from backend.main import Plugin
 from backend.protocol.framing import Frame
 from backend.protocol.messages import (
@@ -86,6 +91,70 @@ class TestSonyConnection:
         assert any(e[0] == "anc_updated" for e in events)
 
 
+class TestDeviceDiscovery:
+    """Tests for Bluetooth device discovery and prioritization."""
+
+    @patch("subprocess.run")
+    def test_classic_preferred_over_le(self, mock_run: MagicMock) -> None:
+        # Mock bluetoothctl devices Connected returning both LE and Classic
+        mock_devices_output = (
+            "Device 11:22:33:44:55:66 LE_WH-1000XM6\nDevice AA:BB:CC:DD:EE:FF WH-1000XM6\n"
+        )
+        mock_info_classic = (
+            "Device AA:BB:CC:DD:EE:FF (public)\n"
+            "Name: WH-1000XM6\n"
+            "Alias: WH-1000XM6\n"
+            "Connected: yes\n"
+            "UUID: Vendor specific (956c7b26-d49a-4ba8-b03f-b17d393cb6e2)\n"
+        )
+        mock_info_le = (
+            "Device 11:22:33:44:55:66 (random)\n"
+            "Name: LE_WH-1000XM6\n"
+            "Alias: LE_WH-1000XM6\n"
+            "Connected: yes\n"
+        )
+
+        def side_effect(cmd: list[str], **kwargs: Any) -> MagicMock:
+            res = MagicMock()
+            res.returncode = 0
+            if "Connected" in cmd:
+                res.stdout = mock_devices_output
+            elif "AA:BB:CC:DD:EE:FF" in cmd:
+                res.stdout = mock_info_classic
+            elif "11:22:33:44:55:66" in cmd:
+                res.stdout = mock_info_le
+            else:
+                res.stdout = ""
+            return res
+
+        mock_run.side_effect = side_effect
+
+        mac, name = find_connected_sony_device()
+        # Must pick Classic Bluetooth MAC AA:BB:CC:DD:EE:FF instead of LE 11:22:33:44:55:66!
+        assert mac == "AA:BB:CC:DD:EE:FF"
+        assert name == "WH-1000XM6"
+
+    @patch("subprocess.run")
+    def test_find_rfcomm_channel_parsing(self, mock_run: MagicMock) -> None:
+        mock_sdp_out = (
+            "Service Name: Sony MDR-V2 Service\n"
+            "Service Description: Sony Wireless Noise Canceling\n"
+            "Service Class ID List:\n"
+            "  UUID 128: 956c7b26-d49a-4ba8-b03f-b17d393cb6e2\n"
+            "Protocol Descriptor List:\n"
+            '  "L2CAP" (0x0100)\n'
+            '  "RFCOMM" (0x0003)\n'
+            "    Channel: 8\n"
+        )
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = mock_sdp_out
+        mock_run.return_value = res
+
+        ch = find_rfcomm_channel("AA:BB:CC:DD:EE:FF")
+        assert ch == 8
+
+
 class TestPluginRPC:
     """Tests for Plugin class RPC endpoints."""
 
@@ -99,6 +168,8 @@ class TestPluginRPC:
             assert "battery_level" in status
             assert "charging" in status
             assert "is_busy" in status
+            assert "mac" in status
+            assert "last_error" in status
             assert status["connected"] is False
 
         asyncio.run(run())
@@ -112,6 +183,32 @@ class TestPluginRPC:
             assert "ambient_level" in state
             assert "voice_focus" in state
             assert state["mode"] in ("cancelling", "ambient", "off")
+
+        asyncio.run(run())
+
+    @patch("backend.main.scan_all_bluetooth_devices")
+    def test_rpc_diagnostics(self, mock_scan: MagicMock) -> None:
+        mock_scan.return_value = [
+            {
+                "mac": "AA:BB:CC:DD:EE:FF",
+                "name": "WH-1000XM6",
+                "alias": "WH-1000XM6",
+                "connected": True,
+                "uuids": ["956c7b26-d49a-4ba8-b03f-b17d393cb6e2"],
+                "icon": "audio-headphones",
+                "is_sony": True,
+                "is_le": False,
+            }
+        ]
+        plugin = Plugin()
+
+        async def run() -> None:
+            diag = await plugin.get_diagnostics()
+            assert "connected" in diag
+            assert "devices" in diag
+            assert len(diag["devices"]) == 1
+            assert diag["devices"][0]["name"] == "WH-1000XM6"
+            assert diag["devices"][0]["is_sony"] is True
 
         asyncio.run(run())
 

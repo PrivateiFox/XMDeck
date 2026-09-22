@@ -1,8 +1,9 @@
 """Bluetooth RFCOMM connection management and BlueZ detection for Sony MDR headphones.
 
 Handles:
-- BlueZ device scanning and Sony MDR UUID detection
+- BlueZ device scanning and Sony MDR UUID detection across Classic BT and BLE
 - Native Linux RFCOMM socket lifecycle (AF_BLUETOOTH, BTPROTO_RFCOMM)
+- Dynamic SDP channel resolution and candidate channel fallback
 - Stream parsing, ARQ handshakes, and background socket reader loop
 - Thread-safe async state notification dispatch
 """
@@ -10,12 +11,13 @@ Handles:
 from __future__ import annotations
 
 import asyncio
-import logging
+import json
 import re
 import socket
 import subprocess
 from typing import Any, Callable
 
+from .logger import logger
 from .protocol.arq import AsyncARQController
 from .protocol.framing import Frame, StreamParser
 from .protocol.messages import (
@@ -32,11 +34,38 @@ from .protocol.messages import (
     parse_speak_to_chat,
 )
 
-logger = logging.getLogger("xmdeck.connection")
+# Standard Sony MDR Service UUIDs
+SONY_MDR_UUID_V2 = "956c7b26-d49a-4ba8-b03f-b17d393cb6e2"
+SONY_MDR_UUID_V2_ALT = "956c7b26-b496-4447-ad7b-3a47900d8c86"
+SONY_MDR_UUID_V1 = "96cc203e-5068-46ad-b32d-e316f5e069ba"
+SONY_MDR_UUID_V1_ALT = "96cc203e-50f8-4944-9c22-edcb48f6216f"
+SONY_FAST_PAIR_UUID = "df21fe2c-2515-4fdb-8886-f12c4d67927c"
 
-# Standard Sony MDR Service UUID
-SONY_MDR_UUID = "956C7B26-D49A-4BA8-B03F-B17D393CB6E2"
+SONY_UUIDS = (
+    SONY_MDR_UUID_V2,
+    SONY_MDR_UUID_V2_ALT,
+    SONY_MDR_UUID_V1,
+    SONY_MDR_UUID_V1_ALT,
+    SONY_FAST_PAIR_UUID,
+)
+
+# Model identifiers and signatures
+SONY_NAME_KEYWORDS = (
+    "1000X",
+    "WH-",
+    "WF-",
+    "SONY",
+    "LINKBUDS",
+    "ULT WEAR",
+    "MDR-",
+    "CH7",
+    "CH5",
+    "C700",
+    "C500",
+)
+
 DEFAULT_RFCOMM_CHANNEL = 9
+FALLBACK_RFCOMM_CHANNELS = (9, 8, 1, 2, 3, 5, 7, 10, 11)
 
 # Regex to validate Bluetooth MAC addresses (e.g. 00:11:22:33:44:55)
 MAC_REGEX = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$")
@@ -47,36 +76,109 @@ def is_rfcomm_supported() -> bool:
     return hasattr(socket, "AF_BLUETOOTH") and hasattr(socket, "BTPROTO_RFCOMM")
 
 
-def find_connected_sony_device() -> tuple[str | None, str | None]:
-    """Scan connected Bluetooth devices via bluetoothctl for Sony WH/WF headphones.
+def scan_all_bluetooth_devices() -> list[dict[str, Any]]:
+    """Scan all paired and connected Bluetooth devices from BlueZ via bluetoothctl & busctl.
 
     Returns:
-        (mac_address, device_name) or (None, None) if not detected.
+        List of device records:
+        [
+            {
+                "mac": str,
+                "name": str,
+                "alias": str,
+                "connected": bool,
+                "uuids": list[str],
+                "icon": str,
+                "is_sony": bool,
+                "is_le": bool,
+            },
+            ...
+        ]
     """
+    devices_dict: dict[str, dict[str, Any]] = {}
+
+    # Method 1: Scan via bluetoothctl (devices Connected, devices Paired, devices)
+    for subcmd in (["devices", "Connected"], ["devices", "Paired"], ["devices"]):
+        try:
+            proc = subprocess.run(
+                ["bluetoothctl", *subcmd],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                for line in proc.stdout.splitlines():
+                    parts = line.strip().split(maxsplit=2)
+                    if len(parts) >= 2 and parts[0] == "Device":
+                        mac = parts[1]
+                        if MAC_REGEX.match(mac):
+                            name = parts[2] if len(parts) >= 3 else mac
+                            if mac not in devices_dict:
+                                devices_dict[mac] = {
+                                    "mac": mac,
+                                    "name": name,
+                                    "alias": name,
+                                    "connected": "Connected" in subcmd,
+                                    "uuids": [],
+                                    "icon": "",
+                                    "is_sony": False,
+                                    "is_le": False,
+                                }
+        except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+            logger.debug("bluetoothctl %s failed: %s", " ".join(subcmd), e)
+
+    # Method 2: Query D-Bus directly via busctl if available (fast & comprehensive)
     try:
-        proc = subprocess.run(
-            ["bluetoothctl", "devices", "Connected"],
+        busctl_proc = subprocess.run(
+            [
+                "busctl",
+                "call",
+                "org.bluez",
+                "/",
+                "org.freedesktop.DBus.ObjectManager",
+                "GetManagedObjects",
+                "--json=pretty",
+            ],
             capture_output=True,
             text=True,
             timeout=2.0,
             check=False,
         )
-        if proc.returncode != 0:
-            return None, None
+        if busctl_proc.returncode == 0 and busctl_proc.stdout:
+            data = json.loads(busctl_proc.stdout)
+            # data has structure: {"data": [ {path: {interface: {prop: {data: ...}}}} ] }
+            objects = data.get("data", [{}])[0]
+            for _obj_path, ifaces in objects.items():
+                if "org.bluez.Device1" in ifaces:
+                    dev = ifaces["org.bluez.Device1"]
+                    addr = dev.get("Address", {}).get("data", "")
+                    if MAC_REGEX.match(addr):
+                        dev_name = dev.get("Name", {}).get("data", addr)
+                        dev_alias = dev.get("Alias", {}).get("data", dev_name)
+                        is_conn = bool(dev.get("Connected", {}).get("data", False))
+                        uuids_raw = dev.get("UUIDs", {}).get("data", [])
+                        uuids = [str(u).lower() for u in uuids_raw]
+                        icon = dev.get("Icon", {}).get("data", "")
 
-        for line in proc.stdout.splitlines():
-            # Line format: "Device AA:BB:CC:DD:EE:FF WH-1000XM4"
-            parts = line.strip().split(maxsplit=2)
-            if len(parts) >= 3 and parts[0] == "Device":
-                mac = parts[1]
-                name = parts[2]
+                        devices_dict[addr] = {
+                            "mac": addr,
+                            "name": dev_name,
+                            "alias": dev_alias,
+                            "connected": is_conn,
+                            "uuids": uuids,
+                            "icon": icon,
+                            "is_sony": False,
+                            "is_le": False,
+                        }
+    except Exception as e:
+        logger.debug("busctl BlueZ scan skipped: %s", e)
 
-                # Check name signature
-                name_upper = name.upper()
-                if any(x in name_upper for x in ("1000XM", "LINKBUDS", "ULT WEAR")):
-                    return mac, name
-
-                # Check device UUIDs via bluetoothctl info
+    # Method 3: Enrich devices with bluetoothctl info
+    results: list[dict[str, Any]] = []
+    for mac, dev in devices_dict.items():
+        if not dev["uuids"] or not dev["connected"]:
+            try:
                 info_proc = subprocess.run(
                     ["bluetoothctl", "info", mac],
                     capture_output=True,
@@ -84,13 +186,131 @@ def find_connected_sony_device() -> tuple[str | None, str | None]:
                     timeout=2.0,
                     check=False,
                 )
-                if SONY_MDR_UUID.lower() in info_proc.stdout.lower():
-                    return mac, name
+                if info_proc.returncode == 0 and info_proc.stdout:
+                    info_out = info_proc.stdout
+                    dev["connected"] = "Connected: yes" in info_out
 
-    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
-        logger.debug("bluetoothctl device scan failed: %s", e)
+                    for line in info_out.splitlines():
+                        line_s = line.strip()
+                        if line_s.startswith("Name:"):
+                            dev["name"] = line_s.split("Name:", 1)[1].strip()
+                        elif line_s.startswith("Alias:"):
+                            dev["alias"] = line_s.split("Alias:", 1)[1].strip()
+                        elif line_s.startswith("Icon:"):
+                            dev["icon"] = line_s.split("Icon:", 1)[1].strip()
+                        elif "UUID:" in line_s:
+                            # Extract UUID if present (e.g. "UUID: Vendor specific (956c...)")
+                            m = re.search(r"\(([0-9a-fA-F-]{36})\)", line_s)
+                            if m:
+                                dev["uuids"].append(m.group(1).lower())
+            except Exception as e:
+                logger.debug("bluetoothctl info %s failed: %s", mac, e)
+
+        # Classify Sony characteristics and BLE
+        name_str = (dev["name"] or "") + " " + (dev["alias"] or "")
+        name_upper = name_str.upper()
+
+        # Check BLE indicator (LE prefix on device name)
+        name_clean = dev["name"].strip().upper()
+        alias_clean = dev["alias"].strip().upper()
+        dev["is_le"] = (
+            name_clean.startswith("LE_")
+            or name_clean.startswith("LE-")
+            or name_clean.startswith("LE ")
+            or alias_clean.startswith("LE_")
+            or alias_clean.startswith("LE-")
+        )
+
+        # Check Sony indicator
+        matches_sony_name = any(kw in name_upper for kw in SONY_NAME_KEYWORDS)
+        matches_sony_uuid = any(any(su in u for su in SONY_UUIDS) for u in dev["uuids"])
+        dev["is_sony"] = matches_sony_name or matches_sony_uuid
+
+        results.append(dev)
+
+    return results
+
+
+def find_connected_sony_device() -> tuple[str | None, str | None]:
+    """Scan connected Bluetooth devices and locate the best candidate Sony WH/WF headphones.
+
+    Explicitly prioritizes Classic Bluetooth (BR/EDR) MAC addresses over BLE addresses,
+    because RFCOMM sockets only operate over Classic Bluetooth.
+
+    Returns:
+        (mac_address, device_name) or (None, None) if no Sony device is detected.
+    """
+    devices = scan_all_bluetooth_devices()
+    if not devices:
+        logger.debug("No Bluetooth devices returned during scan")
+        return None, None
+
+    logger.debug(
+        "Discovered %d Bluetooth devices in scan: %s",
+        len(devices),
+        [d["name"] for d in devices],
+    )
+
+    # Rank 1: Connected Sony Classic Bluetooth (Not LE) -> Highest priority
+    for d in devices:
+        if d["connected"] and d["is_sony"] and not d["is_le"]:
+            logger.info("Found connected Sony Classic device: %s (%s)", d["name"], d["mac"])
+            return d["mac"], d["name"]
+
+    # Rank 2: Connected Sony LE (Fallback if no separate Classic entry listed)
+    for d in devices:
+        if d["connected"] and d["is_sony"] and d["is_le"]:
+            logger.info("Found connected Sony LE device: %s (%s)", d["name"], d["mac"])
+            return d["mac"], d["name"]
+
+    # Rank 3: Connected audio headphone device that might be Sony with a custom name
+    for d in devices:
+        if d["connected"] and not d["is_le"] and ("headphone" in d["icon"] or "audio" in d["icon"]):
+            logger.info("Found connected audio headphone candidate: %s (%s)", d["name"], d["mac"])
+            return d["mac"], d["name"]
+
+    # Rank 4: Paired Sony Classic device (in case BlueZ connection status is delayed)
+    for d in devices:
+        if d["is_sony"] and not d["is_le"]:
+            logger.info("Found paired Sony Classic candidate: %s (%s)", d["name"], d["mac"])
+            return d["mac"], d["name"]
 
     return None, None
+
+
+def find_rfcomm_channel(mac: str) -> int | None:
+    """Query SDP records on remote device to dynamically discover the Sony MDR RFCOMM channel.
+
+    Returns:
+        Channel number (1-30) or None if not discovered.
+    """
+    try:
+        proc = subprocess.run(
+            ["sdptool", "browse", mac],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            return None
+
+        # Split SDP output into service blocks
+        blocks = proc.stdout.split("Service Name:")
+        for block in blocks:
+            block_lower = block.lower()
+            # Match Sony MDR UUIDs or Sony signatures
+            if any(u in block_lower for u in SONY_UUIDS) or "sony" in block_lower:
+                m = re.search(r"Channel:\s*(\d+)", block, re.IGNORECASE)
+                if m:
+                    ch = int(m.group(1))
+                    logger.info("SDP discovered RFCOMM channel %d for %s", ch, mac)
+                    return ch
+
+    except Exception as e:
+        logger.debug("SDP browse query failed for %s: %s", mac, e)
+
+    return None
 
 
 class SonyConnection:
@@ -99,8 +319,10 @@ class SonyConnection:
     def __init__(self) -> None:
         self.mac: str | None = None
         self.device_name: str | None = None
+        self.channel: int | None = None
         self.connected: bool = False
         self.is_busy: bool = False
+        self.last_error: str | None = None
 
         self.battery_status = BatteryStatus(battery_level=None, charging=False)
         self.anc_state = ANCState(mode="cancelling", ambient_level=1, voice_focus=False)
@@ -148,56 +370,104 @@ class SonyConnection:
     async def connect(
         self,
         mac: str,
-        channel: int = DEFAULT_RFCOMM_CHANNEL,
+        channel: int | None = None,
         name: str | None = None,
     ) -> bool:
-        """Establish RFCOMM socket connection to the specified Sony MAC address."""
+        """Establish RFCOMM socket connection to the specified Sony MAC address.
+
+        Attempts dynamic SDP channel detection and falls back to candidate channels.
+        """
         async with self._lock:
             if self.connected:
                 return True
 
             if not is_rfcomm_supported():
-                logger.warning(
-                    "Native AF_BLUETOOTH is not supported on this platform. Connection unavailable."
-                )
+                self.last_error = "Native AF_BLUETOOTH RFCOMM not supported on platform"
+                logger.warning(self.last_error)
                 self.is_busy = False
                 return False
 
             self.mac = mac
             self.device_name = name or "Sony Headphones"
             self.is_busy = False
+            self.last_error = None
 
-            try:
-                loop = asyncio.get_running_loop()
-                # Run blocking socket creation and connect in threadpool
-                sock = await loop.run_in_executor(None, self._sync_connect, mac, channel)
-                sock.setblocking(False)
-                self._socket = sock
-                self.connected = True
-                self._parser.reset()
-                self._arq.sm.reset()
+            loop = asyncio.get_running_loop()
 
-                # Start background reader task
-                self._reader_task = asyncio.create_task(self._socket_reader_loop())
+            # Determine candidate channels to try
+            candidate_channels: list[int] = []
+            if channel is not None:
+                candidate_channels.append(channel)
+            else:
+                sdp_ch = await loop.run_in_executor(None, find_rfcomm_channel, mac)
+                if sdp_ch:
+                    candidate_channels.append(sdp_ch)
+                for ch in FALLBACK_RFCOMM_CHANNELS:
+                    if ch not in candidate_channels:
+                        candidate_channels.append(ch)
 
-                logger.info("Successfully connected to Sony MDR at %s (channel %d)", mac, channel)
+            last_exc: Exception | None = None
 
-                # Query initial states
-                asyncio.create_task(self._query_initial_states())
-                self._notify("connected", True)
-                return True
+            for ch in candidate_channels:
+                try:
+                    logger.debug("Attempting RFCOMM connect to %s on channel %d...", mac, ch)
+                    sock = await loop.run_in_executor(None, self._sync_connect, mac, ch)
+                    sock.setblocking(False)
+                    self._socket = sock
+                    self.channel = ch
+                    self.connected = True
+                    self._parser.reset()
+                    self._arq.sm.reset()
 
-            except OSError as e:
-                logger.warning("Failed to connect to %s: %s", mac, e)
-                # Check for EBUSY (channel locked by smartphone app)
-                if getattr(e, "errno", None) in (16, 114):  # EBUSY or EALREADY
-                    self.is_busy = True
-                await self.disconnect()
-                return False
+                    # Start background reader task
+                    self._reader_task = asyncio.create_task(self._socket_reader_loop())
+
+                    logger.info("Successfully connected to Sony MDR at %s (channel %d)", mac, ch)
+
+                    # Query initial states
+                    asyncio.create_task(self._query_initial_states())
+                    self._notify("connected", True)
+                    return True
+
+                except OSError as e:
+                    last_exc = e
+                    err_num = getattr(e, "errno", None)
+                    logger.debug(
+                        "Failed connect to %s channel %d (errno %s): %s",
+                        mac,
+                        ch,
+                        err_num,
+                        e,
+                    )
+
+                    # If channel is locked by smartphone app
+                    if err_num in (16, 114):  # EBUSY or EALREADY
+                        self.is_busy = True
+                        self.last_error = "RFCOMM Port Busy (locked by smartphone app)"
+                        break
+
+            # If all candidate channels failed
+            err_num = getattr(last_exc, "errno", None) if last_exc else None
+            if err_num in (111, 104):  # ECONNREFUSED or ECONNRESET
+                self.is_busy = True
+                self.last_error = (
+                    f"Connection refused on all channels for {mac}. "
+                    "Your headphones may be connected to the Sony app on your phone."
+                )
+            elif err_num in (112, 113):  # EHOSTDOWN or ENETUNREACH
+                self.last_error = (
+                    f"Headphones unreachable at {mac}. Ensure headphones are turned on."
+                )
+            else:
+                self.last_error = f"Bluetooth error [{err_num}]: {last_exc}"
+
+            logger.warning("All RFCOMM connection attempts failed for %s: %s", mac, self.last_error)
+            await self.disconnect()
+            return False
 
     def _sync_connect(self, mac: str, channel: int) -> socket.socket:
         sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-        sock.settimeout(3.0)
+        sock.settimeout(2.0)
         sock.connect((mac, channel))
         return sock
 
