@@ -155,43 +155,41 @@ def parse_battery_status(payload: bytes) -> BatteryStatus:
 
     inquired_type = payload[1]
 
-    if inquired_type == PowerInquiredType.BATTERY:
-        if len(payload) >= 4:
-            level = payload[2]
-            charging = payload[3] in (
-                BatteryChargingStatus.CHARGING,
-                BatteryChargingStatus.CHARGED,
-            )
-            # Level 255 indicates unknown/not reported
-            valid_level = level if level <= 100 else None
-            return BatteryStatus(battery_level=valid_level, charging=charging)
+    if inquired_type == PowerInquiredType.BATTERY and len(payload) >= 4:
+        level = payload[2]
+        charging = payload[3] in (
+            BatteryChargingStatus.CHARGING,
+            BatteryChargingStatus.CHARGED,
+        )
+        # Level 255 indicates unknown/not reported
+        valid_level = level if level <= 100 else None
+        return BatteryStatus(battery_level=valid_level, charging=charging)
 
-    elif inquired_type == PowerInquiredType.LEFT_RIGHT_BATTERY:
-        if len(payload) >= 6:
-            l_level = payload[2] if payload[2] <= 100 else None
-            l_charging = payload[3] in (
-                BatteryChargingStatus.CHARGING,
-                BatteryChargingStatus.CHARGED,
-            )
-            r_level = payload[4] if payload[4] <= 100 else None
-            r_charging = payload[5] in (
-                BatteryChargingStatus.CHARGING,
-                BatteryChargingStatus.CHARGED,
-            )
+    if inquired_type == PowerInquiredType.LEFT_RIGHT_BATTERY and len(payload) >= 6:
+        l_level = payload[2] if payload[2] <= 100 else None
+        l_charging = payload[3] in (
+            BatteryChargingStatus.CHARGING,
+            BatteryChargingStatus.CHARGED,
+        )
+        r_level = payload[4] if payload[4] <= 100 else None
+        r_charging = payload[5] in (
+            BatteryChargingStatus.CHARGING,
+            BatteryChargingStatus.CHARGED,
+        )
 
-            # Synthesize overall battery level (average of non-None earbud levels)
-            levels = [x for x in (l_level, r_level) if x is not None]
-            avg_level = sum(levels) // len(levels) if levels else None
-            overall_charging = bool(l_charging or r_charging)
+        # Synthesize overall battery level (average of non-None earbud levels)
+        levels = [x for x in (l_level, r_level) if x is not None]
+        avg_level = sum(levels) // len(levels) if levels else None
+        overall_charging = bool(l_charging or r_charging)
 
-            return BatteryStatus(
-                battery_level=avg_level,
-                charging=overall_charging,
-                left_level=l_level,
-                right_level=r_level,
-                left_charging=l_charging,
-                right_charging=r_charging,
-            )
+        return BatteryStatus(
+            battery_level=avg_level,
+            charging=overall_charging,
+            left_level=l_level,
+            right_level=r_level,
+            left_charging=l_charging,
+            right_charging=r_charging,
+        )
 
     return BatteryStatus(battery_level=None, charging=False)
 

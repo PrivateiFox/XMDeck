@@ -11,13 +11,15 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
 import shutil
 import socket
 import subprocess
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .logger import logger
 from .protocol.arq import AsyncARQController
@@ -89,10 +91,7 @@ def is_rfcomm_supported() -> bool:
 
     # 2. System python3 bridge check (SteamOS / Linux)
     python_bin = shutil.which("python3") or "/usr/bin/python3"
-    if os.path.exists(python_bin) and hasattr(socket, "AF_UNIX"):
-        return True
-
-    return False
+    return bool(os.path.exists(python_bin) and hasattr(socket, "AF_UNIX"))
 
 
 def scan_all_bluetooth_devices() -> list[dict[str, Any]]:
@@ -508,10 +507,8 @@ class SonyConnection:
         sock_path = f"/tmp/xmdeck_{mac.replace(':', '')}.sock"
 
         if os.path.exists(sock_path):
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(sock_path)
-            except OSError:
-                pass
 
         logger.info(
             "Launching python3 RFCOMM bridge for %s ch %d via %s...",
@@ -567,18 +564,14 @@ class SonyConnection:
             self._reader_task = None
 
         if self._socket is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self._socket.close()
-            except OSError:
-                pass
             self._socket = None
 
         if self._bridge_proc is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._bridge_proc.terminate()
                 self._bridge_proc.wait(timeout=1.0)
-            except Exception:
-                pass
             self._bridge_proc = None
 
         self._notify("connected", False)
