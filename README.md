@@ -52,19 +52,28 @@ Tested and confirmed compatible with Sony MDR protocol:
 Open Konsole on your Steam Deck (Desktop Mode or via SSH) and run:
 
 ```bash
+curl -L -s https://github.com/PrivateiFox/XMDeck/releases/latest/download/XMDeck.zip -o /tmp/XMDeck.zip && \
 sudo rm -rf /home/deck/homebrew/plugins/XMDeck && \
-git clone https://github.com/PrivateiFox/XMDeck.git /home/deck/homebrew/plugins/XMDeck && \
+sudo unzip -q -o /tmp/XMDeck.zip -d /home/deck/homebrew/plugins/ && \
+rm -f /tmp/XMDeck.zip && \
 sudo systemctl restart plugin_loader
 ```
 
 ### Option 2: Manual Zip Installation
 
 1. Download the latest `XMDeck.zip` from [Releases](https://github.com/PrivateiFox/XMDeck/releases).
-2. Extract the contents into `/home/deck/homebrew/plugins/XMDeck/`.
+2. Extract the archive into `/home/deck/homebrew/plugins/` (e.g., via Ark or terminal `unzip XMDeck.zip -d /home/deck/homebrew/plugins/`).
 3. Restart Decky Loader:
    ```bash
    sudo systemctl restart plugin_loader
    ```
+
+### Option 3: Install via Decky Loader Developer Menu
+
+1. On your Steam Deck, open Quick Access Menu (`•••`) -> **Decky Loader** -> **Settings** (⚙️).
+2. Under **General**, toggle **Enable Developer Mode**.
+3. Under the **Developer** tab, select **Install Plugin from URL**.
+4. Enter URL: `https://github.com/PrivateiFox/XMDeck/releases/latest/download/XMDeck.zip`
 
 ---
 

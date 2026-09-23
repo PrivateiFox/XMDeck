@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v0.1.0). Defaults to v<package.json version>."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine release tag
+        id: release_tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+            TAG="v${VERSION}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run tests and lint checks
+        run: |
+          uv run pytest -v
+          uv run ruff check .
+
+      - name: Build plugin frontend
+        run: npm run build
+
+      - name: Create XMDeck.zip package
+        run: |
+          find backend -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          find backend -name "*.pyc" -delete 2>/dev/null || true
+          mkdir -p build_stage/XMDeck
+          cp -r dist backend main.py plugin.json package.json README.md LICENSE pyproject.toml build_stage/XMDeck/
+          [ -f probe.py ] && cp probe.py build_stage/XMDeck/ || true
+          [ -d assets ] && cp -r assets build_stage/XMDeck/ || true
+          cd build_stage
+          zip -r ../XMDeck.zip XMDeck
+          cd ..
+          rm -rf build_stage
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: ${{ steps.release_tag.outputs.tag }}
+          files: XMDeck.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
