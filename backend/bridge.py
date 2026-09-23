@@ -6,6 +6,7 @@ Used when Decky Loader's embedded Python runtime lacks AF_BLUETOOTH / BTPROTO_RF
 
 from __future__ import annotations
 
+import contextlib
 import os
 import select
 import socket
@@ -18,10 +19,8 @@ AF_UNIX = getattr(socket, "AF_UNIX", 1)
 
 def run_bridge(mac: str, channel: int, unix_sock_path: str) -> None:
     if os.path.exists(unix_sock_path):
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(unix_sock_path)
-        except OSError:
-            pass
 
     rfcomm_sock: socket.socket | None = None
     server_sock: socket.socket | None = None
@@ -68,25 +67,17 @@ def run_bridge(mac: str, channel: int, unix_sock_path: str) -> None:
         sys.exit(1)
     finally:
         if rfcomm_sock:
-            try:
+            with contextlib.suppress(Exception):
                 rfcomm_sock.close()
-            except Exception:
-                pass
         if client_sock:
-            try:
+            with contextlib.suppress(Exception):
                 client_sock.close()
-            except Exception:
-                pass
         if server_sock:
-            try:
+            with contextlib.suppress(Exception):
                 server_sock.close()
-            except Exception:
-                pass
         if os.path.exists(unix_sock_path):
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(unix_sock_path)
-            except OSError:
-                pass
 
 
 if __name__ == "__main__":
