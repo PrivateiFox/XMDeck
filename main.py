@@ -6,11 +6,9 @@ import os
 import sys
 
 # Ensure plugin directory is in sys.path before importing internal packages
-# in Decky's sandboxed environment
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-for _path in (_PLUGIN_DIR, "/home/deck/homebrew/plugins/XMDeck"):
-    if _path and os.path.exists(_path) and _path not in sys.path:
-        sys.path.insert(0, _path)
+if _PLUGIN_DIR and _PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, _PLUGIN_DIR)
 
 from backend.main import Plugin  # noqa: E402
 
