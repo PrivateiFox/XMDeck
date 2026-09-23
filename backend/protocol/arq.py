@@ -8,8 +8,8 @@ Sony MDR V2 uses a 1-bit alternating sequence counter (0 or 1).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from .framing import Frame, encode_frame
 from .messages import FrameDataType
@@ -226,7 +226,7 @@ class AsyncARQController:
             while not fut.done():
                 try:
                     await asyncio.wait_for(asyncio.shield(fut), timeout=self.sm.timeout_seconds)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if not self.sm.has_pending_tx:
                         break
                     try:
