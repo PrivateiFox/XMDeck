@@ -1,15 +1,15 @@
 """XMDeck root entry point for Decky Loader runtime."""
 
+from __future__ import annotations
+
 import os
 import sys
 
-# Ensure plugin directory is in sys.path so 'backend' is importable in Decky's sandboxed environment
-plugin_dir = os.path.dirname(os.path.abspath(__file__))
-for path in [plugin_dir, "/home/deck/homebrew/plugins/XMDeck"]:
-    if path and os.path.exists(path) and path not in sys.path:
-        sys.path.insert(0, path)
+# Ensure plugin directory is in sys.path before importing internal packages
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+if _PLUGIN_DIR and _PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, _PLUGIN_DIR)
 
 from backend.main import Plugin  # noqa: E402
 
 __all__ = ["Plugin"]
-
