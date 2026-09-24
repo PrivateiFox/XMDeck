@@ -13,9 +13,12 @@ from backend.protocol.messages import (
     parse_battery_status,
 )
 
-MAC = "AA:BB:CC:DD:EE:FF"
-if len(sys.argv) > 1:
-    MAC = sys.argv[1]
+if len(sys.argv) < 2:
+    print("Usage: python probe.py <BLUETOOTH_MAC_ADDRESS>")
+    print("Example: python probe.py AA:BB:CC:DD:EE:FF")
+    sys.exit(1)
+
+MAC = sys.argv[1].strip()
 
 print("==================================================")
 print(f"XMDeck Diagnostic Probe targeting: {MAC}")
@@ -74,7 +77,7 @@ try:
 
     sock.close()
     print("\n==================================================")
-    print("RESULT: SUCCESS! Communication with Sony WH-1000XM6 verified on Channel 9!")
+    print(f"RESULT: SUCCESS! Communication with {MAC} verified on Channel 9!")
     print("==================================================")
 
 except Exception as e:
