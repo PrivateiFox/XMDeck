@@ -47,6 +47,10 @@ Tested and confirmed compatible with Sony MDR protocol:
 
 ## 🚀 Installation
 
+> [!NOTE]
+> **A Note on Store Availability & Development:**
+> This plugin was developed with the assistance of an LLM (as most things are nowadays). Because the official Decky Plugin Database currently has a strict policy barring LLM-assisted code, XMDeck cannot be listed on the official Decky Store at this time. If this changes at any point in the future, I would love to add it! In the meantime, Decky Loader fully supports independent installation—you can install it directly in seconds as explained below.
+
 You can install XMDeck directly on your Steam Deck via Decky Loader:
 
 1. On your Steam Deck, open Quick Access Menu (`•••`) -> **Decky Loader** -> **Settings** (⚙️).
