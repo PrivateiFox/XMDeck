@@ -331,6 +331,14 @@ class TestMessages:
         assert state.ambient_level == 12
         assert state.voice_focus is True
 
+        # Real WH-1000XM5/XM6 notification packet (0x19 seamless mode)
+        real_ntfy = bytes.fromhex("69 19 01 01 01 00 0f 00 00")
+        real_state = parse_anc_state(real_ntfy)
+        assert real_state is not None
+        assert real_state.mode == "ambient"
+        assert real_state.ambient_level == 15
+        assert real_state.voice_focus is False
+
         # Non-ANC packet returns None
         assert parse_anc_state(b"\x21\x00") is None
 
