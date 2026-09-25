@@ -71,6 +71,7 @@ class NcAsmInquiredType(IntEnum):
     NC_ON_OFF = 0x01
     NC_MODE_SWITCH_AND_ASM_SEAMLESS = 0x14  # 20
     MODE_NC_ASM_DUAL_NC_MODE_SWITCH_AND_ASM_SEAMLESS = 0x17  # 23
+    MODE_NC_ASM_SEAMLESS_V2 = 0x19  # 25 (WH-1000XM5, WH-1000XM6, LinkBuds)
 
 
 class NcAsmOnOffValue(IntEnum):
@@ -199,10 +200,10 @@ def parse_battery_status(payload: bytes) -> BatteryStatus:
 # ---------------------------------------------------------------------------
 
 
-DEFAULT_NC_ASM_TYPE = NcAsmInquiredType.MODE_NC_ASM_DUAL_NC_MODE_SWITCH_AND_ASM_SEAMLESS
+DEFAULT_NC_ASM_TYPE = NcAsmInquiredType.MODE_NC_ASM_SEAMLESS_V2
 
 
-def build_anc_query(inquired_type: NcAsmInquiredType = DEFAULT_NC_ASM_TYPE) -> bytes:
+def build_anc_query(inquired_type: int = DEFAULT_NC_ASM_TYPE) -> bytes:
     """Build query payload for ANC/Ambient sound parameters."""
     return bytes([CommandTable1.NCASM_GET_PARAM, inquired_type])
 
@@ -218,6 +219,7 @@ def parse_anc_state(payload: bytes) -> ANCState | None:
 
     inquired_type = payload[1]
     if inquired_type not in (
+        NcAsmInquiredType.MODE_NC_ASM_SEAMLESS_V2,
         NcAsmInquiredType.MODE_NC_ASM_DUAL_NC_MODE_SWITCH_AND_ASM_SEAMLESS,
         NcAsmInquiredType.NC_MODE_SWITCH_AND_ASM_SEAMLESS,
     ):
