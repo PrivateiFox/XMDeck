@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 
 # Attempt importing Decky runtime module
 try:
@@ -21,13 +22,25 @@ except ImportError:
         _decky_logger = None
 
 logger = logging.getLogger("xmdeck")
-logger.setLevel(logging.DEBUG)
+
+
+def _get_log_level() -> int:
+    """Determine log level from environment variables, defaulting to INFO to reduce SSD wear."""
+    if os.environ.get("XMDECK_DEBUG", "").lower() in ("1", "true", "yes"):
+        return logging.DEBUG
+    level_name = os.environ.get("XMDECK_LOG_LEVEL", "INFO").upper()
+    return getattr(logging, level_name, logging.INFO)
+
+
+logger.setLevel(_get_log_level())
 
 
 def setup_logging() -> None:
     """Initialize file, console, and Decky handlers for XMDeck logging."""
     if logger.handlers:
         return
+
+    log_level = _get_log_level()
 
     formatter = logging.Formatter(
         "[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
@@ -37,7 +50,7 @@ def setup_logging() -> None:
     # Console / stdout handler for journalctl capture
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(log_level)
     logger.addHandler(console_handler)
 
     # Determine log destination directory
@@ -54,11 +67,21 @@ def setup_logging() -> None:
         try:
             os.makedirs(log_dir, exist_ok=True)
             log_file = os.path.join(log_dir, "plugin.log")
-            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            # Limit file size and rotate to cap disk usage and reduce SSD wear
+            file_handler = RotatingFileHandler(
+                log_file,
+                maxBytes=512 * 1024,  # 512 KB cap
+                backupCount=1,
+                encoding="utf-8",
+            )
             file_handler.setFormatter(formatter)
-            file_handler.setLevel(logging.DEBUG)
+            file_handler.setLevel(log_level)
             logger.addHandler(file_handler)
-            logger.info("XMDeck logging initialized at %s", log_file)
+            logger.info(
+                "XMDeck logging initialized at %s (level=%s)",
+                log_file,
+                logging.getLevelName(log_level),
+            )
             break
         except (OSError, PermissionError):
             continue
