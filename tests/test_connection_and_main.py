@@ -226,6 +226,7 @@ class TestPluginRPC:
 
     def test_plugin_lifecycle(self) -> None:
         plugin = Plugin()
+        plugin._inactivity_delay = 0.01
 
         async def run() -> None:
             await plugin._main()
@@ -240,8 +241,10 @@ class TestPluginRPC:
                 assert plugin._ui_active is True
                 assert plugin._monitor_task is not None
 
-                # Test deactivating UI
+                # Test deactivating UI with debounced grace period
                 await plugin.set_ui_active(False)
+                assert plugin._deactivate_task is not None
+                await plugin._deactivate_task
                 assert plugin._ui_active is False
                 assert plugin._monitor_task is None
 
@@ -250,8 +253,29 @@ class TestPluginRPC:
 
         asyncio.run(run())
 
-    def test_set_ui_active_disconnects_socket(self) -> None:
+    def test_set_ui_active_cancels_when_reopened(self) -> None:
         plugin = Plugin()
+        plugin._inactivity_delay = 1.0
+
+        async def run() -> None:
+            await plugin._main()
+            with patch.object(plugin, "trigger_connect"):
+                await plugin.set_ui_active(True)
+                assert plugin._ui_active is True
+                # User opens dropdown (unmounts)
+                await plugin.set_ui_active(False)
+                assert plugin._deactivate_task is not None
+                # User selects item (remounts quickly)
+                await plugin.set_ui_active(True)
+                assert plugin._deactivate_task is None
+                assert plugin._ui_active is True
+            await plugin._unload()
+
+        asyncio.run(run())
+
+    def test_set_ui_active_disconnects_socket_after_grace_period(self) -> None:
+        plugin = Plugin()
+        plugin._inactivity_delay = 0.01
 
         async def run() -> None:
             await plugin._main()
@@ -259,6 +283,7 @@ class TestPluginRPC:
             with patch.object(plugin.conn, "disconnect") as mock_disconnect:
                 mock_disconnect.return_value = None
                 await plugin.set_ui_active(False)
+                await asyncio.sleep(0.02)
                 mock_disconnect.assert_called_once()
             await plugin._unload()
 

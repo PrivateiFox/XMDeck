@@ -379,6 +379,8 @@ class SonyConnection:
 
         self.battery_status = BatteryStatus(battery_level=None, charging=False)
         self.anc_state = ANCState(mode="cancelling", ambient_level=1, voice_focus=False)
+        self.anc_inquired_type: int = 0x17  # Default to seamless dual mode
+        self.known_channels: dict[str, int] = {}
         self.speak_to_chat: bool = False
 
         self._socket: socket.socket | None = None
@@ -453,9 +455,19 @@ class SonyConnection:
             if channel is not None:
                 candidate_channels.append(channel)
             else:
+                # Priority 1: Previously verified channel for this device
+                if mac in self.known_channels:
+                    candidate_channels.append(self.known_channels[mac])
+
+                # Priority 2: Standard Sony MDR channel (9)
+                if DEFAULT_RFCOMM_CHANNEL not in candidate_channels:
+                    candidate_channels.append(DEFAULT_RFCOMM_CHANNEL)
+
+                # Priority 3: Dynamic SDP discovery
                 sdp_ch = await loop.run_in_executor(None, find_rfcomm_channel, mac)
-                if sdp_ch:
+                if sdp_ch and sdp_ch not in candidate_channels:
                     candidate_channels.append(sdp_ch)
+
                 for ch in FALLBACK_RFCOMM_CHANNELS:
                     if ch not in candidate_channels:
                         candidate_channels.append(ch)
@@ -469,6 +481,7 @@ class SonyConnection:
                     sock.setblocking(False)
                     self._socket = sock
                     self.channel = ch
+                    self.known_channels[mac] = ch
                     self.connected = True
                     self._parser.reset()
                     self._arq.sm.reset()
@@ -649,6 +662,8 @@ class SonyConnection:
         # Check for ANC & Ambient Sound
         new_anc = parse_anc_state(payload)
         if new_anc is not None:
+            if len(payload) >= 2:
+                self.anc_inquired_type = payload[1]
             self.anc_state = new_anc
             self._notify("anc_updated", self.anc_state)
 
@@ -677,7 +692,7 @@ class SonyConnection:
 
     async def query_anc_state(self) -> ANCState:
         """Send ANC status query over ARQ."""
-        query = build_anc_query()
+        query = build_anc_query(inquired_type=self.anc_inquired_type)
         await self._arq.send_command(query)
         return self.anc_state
 
@@ -696,6 +711,7 @@ class SonyConnection:
             mode,
             ambient_level=amb_level,
             voice_focus=self.anc_state.voice_focus,
+            inquired_type=self.anc_inquired_type,
         )
         try:
             await self._arq.send_command(cmd)
@@ -714,7 +730,11 @@ class SonyConnection:
 
     async def set_ambient_sound(self, level: int, voice_focus: bool) -> bool:
         """Set Ambient Sound level (1-20) and Voice Focus."""
-        cmd = build_set_ambient_sound(level=level, voice_focus=voice_focus)
+        cmd = build_set_ambient_sound(
+            level=level,
+            voice_focus=voice_focus,
+            inquired_type=self.anc_inquired_type,
+        )
         try:
             await self._arq.send_command(cmd)
             # Optimistically update local state
