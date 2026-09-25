@@ -379,7 +379,7 @@ class SonyConnection:
 
         self.battery_status = BatteryStatus(battery_level=None, charging=False)
         self.anc_state = ANCState(mode="cancelling", ambient_level=1, voice_focus=False)
-        self.anc_inquired_type: int = 0x17  # Default to seamless dual mode
+        self.anc_inquired_type: int = 0x19  # Default to modern Sony V2 seamless type (XM5/XM6)
         self.known_channels: dict[str, int] = {}
         self.speak_to_chat: bool = False
 
