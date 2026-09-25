@@ -216,6 +216,13 @@ def parse_anc_state(payload: bytes) -> ANCState | None:
     if cmd not in (CommandTable1.NCASM_RET_PARAM, CommandTable1.NCASM_NTFY_PARAM):
         return None
 
+    inquired_type = payload[1]
+    if inquired_type not in (
+        NcAsmInquiredType.MODE_NC_ASM_DUAL_NC_MODE_SWITCH_AND_ASM_SEAMLESS,
+        NcAsmInquiredType.NC_MODE_SWITCH_AND_ASM_SEAMLESS,
+    ):
+        return None
+
     # Minimum struct length: cmd(1) + type(1) + status(1) + onOff(1) + mode(1) + asm(1) + val(1) = 7
     total_effect = payload[3]
     nc_mode = payload[4]
@@ -239,7 +246,7 @@ def build_set_anc_mode(
     mode: str,
     ambient_level: int = 1,
     voice_focus: bool = False,
-    inquired_type: NcAsmInquiredType = DEFAULT_NC_ASM_TYPE,
+    inquired_type: int = DEFAULT_NC_ASM_TYPE,
 ) -> bytes:
     """Build command payload to set Active Noise Cancellation mode.
 
@@ -281,7 +288,7 @@ def build_set_anc_mode(
 def build_set_ambient_sound(
     level: int,
     voice_focus: bool,
-    inquired_type: NcAsmInquiredType = DEFAULT_NC_ASM_TYPE,
+    inquired_type: int = DEFAULT_NC_ASM_TYPE,
 ) -> bytes:
     """Build command payload to adjust Ambient Sound level and Voice Focus."""
     return build_set_anc_mode(

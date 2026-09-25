@@ -35,6 +35,8 @@ class Plugin:
         self._monitor_task: asyncio.Task[None] | None = None
         self._fallback_task: asyncio.Task[None] | None = None
         self._monitor_proc: asyncio.subprocess.Process | None = None
+        self._deactivate_task: asyncio.Task[None] | None = None
+        self._inactivity_delay: float = 15.0
         self._running: bool = False
         self._ui_active: bool = False
 
@@ -54,6 +56,10 @@ class Plugin:
         self._ui_active = False
         logger.info("XMDeck plugin unloading...")
 
+        if self._deactivate_task and not self._deactivate_task.done():
+            self._deactivate_task.cancel()
+            self._deactivate_task = None
+
         await self._stop_bluetooth_monitor()
         await self.conn.disconnect()
 
@@ -72,35 +78,56 @@ class Plugin:
                 )
             )
 
+    async def _delayed_deactivate(self) -> None:
+        """Grace period before tearing down RFCOMM, preventing churn during UI interactions."""
+        try:
+            logger.debug("UI unfocused: grace period started (%ss)...", self._inactivity_delay)
+            await asyncio.sleep(self._inactivity_delay)
+            self._ui_active = False
+            logger.info("UI grace period expired: releasing RFCOMM connection")
+            await self._stop_bluetooth_monitor()
+            if self.conn.connected:
+                await self.conn.disconnect()
+        except asyncio.CancelledError:
+            logger.debug("UI grace period cancelled (user returned to XMDeck)")
+
     async def set_ui_active(self, active: bool) -> bool:
-        """Handle UI tab visibility changes to only hold RFCOMM while viewing XMDeck."""
+        """Handle UI tab visibility changes with debouncing to prevent socket churn."""
         logger.info("set_ui_active called: %s (current: %s)", active, self._ui_active)
-        self._ui_active = active
+
         if active:
-            # Tab opened: start reactive event monitor
+            # Cancel any pending deactivation countdown
+            if self._deactivate_task and not self._deactivate_task.done():
+                logger.info("Cancelling pending UI deactivation timer")
+                self._deactivate_task.cancel()
+                self._deactivate_task = None
+
+            self._ui_active = True
+            # Tab opened: start reactive event monitor if not already running
             if self._monitor_task is None or self._monitor_task.done():
                 self._monitor_task = asyncio.create_task(self._start_bluetooth_monitor())
         else:
-            # Tab closed / unfocused: release monitor and RFCOMM connection immediately
-            await self._stop_bluetooth_monitor()
-            if self.conn.connected:
-                logger.info("UI closed: disconnecting RFCOMM to release socket")
-                await self.conn.disconnect()
+            # Component unmounted (dropdown opened or tab switched)
+            # Start grace period timer instead of immediately disconnecting
+            if self._deactivate_task is None or self._deactivate_task.done():
+                self._deactivate_task = asyncio.create_task(self._delayed_deactivate())
 
         return True
 
     async def _stop_bluetooth_monitor(self) -> None:
         """Clean up background monitor process, fallback loop, and reader task."""
-        if self._fallback_task and not self._fallback_task.done():
-            self._fallback_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._fallback_task
+        if self._fallback_task:
+            if not self._fallback_task.done():
+                self._fallback_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._fallback_task
             self._fallback_task = None
 
-        if self._monitor_task and not self._monitor_task.done():
-            self._monitor_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._monitor_task
+        if self._monitor_task:
+            if not self._monitor_task.done():
+                self._monitor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._monitor_task
             self._monitor_task = None
 
         if self._monitor_proc:

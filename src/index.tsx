@@ -93,7 +93,11 @@ const XMDeckPanel: FC = () => {
     setAnc((prev) => ({ ...prev, mode }));
     setLoading(true);
     try {
-      await call<[string], boolean>("set_anc_mode", mode);
+      const ok = await call<[string], boolean>("set_anc_mode", mode);
+      if (!ok) {
+        console.warn("[XMDeck] set_anc_mode returned false, refreshing status");
+        refreshStatus();
+      }
     } catch (e) {
       console.error("[XMDeck] Failed setting ANC mode:", e);
       refreshStatus();
