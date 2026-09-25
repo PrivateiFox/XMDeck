@@ -10,7 +10,6 @@ import { FaHeadphones } from "react-icons/fa";
 import {
   ANCMode,
   ANCState,
-  BluetoothDeviceInfo,
   ConnectionStatus,
   PluginStateUpdate,
 } from "./types";
@@ -30,7 +29,6 @@ const XMDeckPanel: FC = () => {
     last_error: null,
   });
 
-  const [devices, setDevices] = useState<BluetoothDeviceInfo[]>([]);
   const [anc, setAnc] = useState<ANCState>({
     mode: "cancelling",
     ambient_level: 1,
@@ -59,20 +57,13 @@ const XMDeckPanel: FC = () => {
     }
   }, []);
 
-  const fetchDevices = useCallback(async () => {
-    try {
-      const scanned = await call<[], BluetoothDeviceInfo[]>("scan_devices");
-      if (scanned) {
-        setDevices(scanned);
-      }
-    } catch (e) {
-      console.error("[XMDeck] Failed scanning Bluetooth devices:", e);
-    }
-  }, []);
-
   useEffect(() => {
+    // Notify backend that user opened the XMDeck tab
+    call<[boolean], boolean>("set_ui_active", true).catch((e) =>
+      console.error("[XMDeck] Failed activating UI session:", e)
+    );
+
     refreshStatus();
-    fetchDevices();
 
     const onStateChanged = (update: PluginStateUpdate) => {
       if (update.connection) {
@@ -88,19 +79,14 @@ const XMDeckPanel: FC = () => {
 
     addEventListener<[PluginStateUpdate]>("xmdeck_state_changed", onStateChanged);
 
-    // Poll periodically as fallback
-    const interval = setInterval(() => {
-      refreshStatus();
-      if (!connection.connected) {
-        fetchDevices();
-      }
-    }, 4000);
-
     return () => {
       removeEventListener("xmdeck_state_changed", onStateChanged);
-      clearInterval(interval);
+      // Release RFCOMM connection when user leaves tab or closes Quick Access Menu
+      call<[boolean], boolean>("set_ui_active", false).catch((e) =>
+        console.error("[XMDeck] Failed deactivating UI session:", e)
+      );
     };
-  }, [refreshStatus, fetchDevices, connection.connected]);
+  }, [refreshStatus]);
 
   // Handlers with optimistic UI updates
   const handleModeChange = async (mode: ANCMode) => {
@@ -144,40 +130,9 @@ const XMDeckPanel: FC = () => {
     }
   };
 
-  const handleManualConnect = async (mac: string) => {
-    setLoading(true);
-    try {
-      await call<[string], boolean>("connect_device", mac);
-      await refreshStatus();
-    } catch (e) {
-      console.error("[XMDeck] Manual connect failed:", e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleManualScan = async () => {
-    setLoading(true);
-    try {
-      await call("trigger_connect");
-      await fetchDevices();
-      await refreshStatus();
-    } catch (e) {
-      console.error("[XMDeck] Manual scan failed:", e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <PanelSection title="Sony WH/WF Headphones">
-      <ConnectionBanner
-        status={connection}
-        devices={devices}
-        onConnect={handleManualConnect}
-        onScan={handleManualScan}
-        disabled={loading}
-      />
+      <ConnectionBanner status={connection} />
 
       {connection.connected && (
         <>
@@ -212,6 +167,8 @@ export default definePlugin(() => {
     title: <div className={staticClasses.Title}>XMDeck</div>,
     content: <XMDeckPanel />,
     icon: <FaHeadphones />,
-    onDismount() {},
+    onDismount() {
+      call("set_ui_active", false).catch(() => {});
+    },
   };
 });

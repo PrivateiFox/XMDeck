@@ -10,6 +10,7 @@ from backend.connection import (
     SonyConnection,
     find_connected_sony_device,
     find_rfcomm_channel,
+    quick_find_connected_sony_device,
 )
 from backend.main import Plugin
 from backend.protocol.framing import Frame
@@ -154,6 +155,17 @@ class TestDeviceDiscovery:
         ch = find_rfcomm_channel("AA:BB:CC:DD:EE:FF")
         assert ch == 8
 
+    @patch("subprocess.run")
+    def test_quick_find_connected_sony_device(self, mock_run: MagicMock) -> None:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = (
+            "Device 11:22:33:44:55:66 Xbox Wireless Controller\n"
+            "Device AA:BB:CC:DD:EE:FF WH-1000XM5\n"
+        )
+        mac, name = quick_find_connected_sony_device()
+        assert mac == "AA:BB:CC:DD:EE:FF"
+        assert name == "WH-1000XM5"
+
 
 class TestPluginRPC:
     """Tests for Plugin class RPC endpoints."""
@@ -218,7 +230,183 @@ class TestPluginRPC:
         async def run() -> None:
             await plugin._main()
             assert plugin._running is True
+            assert plugin._ui_active is False
+            assert plugin._monitor_task is None
+
+            # Test activating UI
+            with patch.object(plugin, "trigger_connect") as mock_trigger:
+                mock_trigger.return_value = {}
+                await plugin.set_ui_active(True)
+                assert plugin._ui_active is True
+                assert plugin._monitor_task is not None
+
+                # Test deactivating UI
+                await plugin.set_ui_active(False)
+                assert plugin._ui_active is False
+                assert plugin._monitor_task is None
+
             await plugin._unload()
             assert plugin._running is False
 
         asyncio.run(run())
+
+    def test_set_ui_active_disconnects_socket(self) -> None:
+        plugin = Plugin()
+
+        async def run() -> None:
+            await plugin._main()
+            plugin.conn.connected = True
+            with patch.object(plugin.conn, "disconnect") as mock_disconnect:
+                mock_disconnect.return_value = None
+                await plugin.set_ui_active(False)
+                mock_disconnect.assert_called_once()
+            await plugin._unload()
+
+        asyncio.run(run())
+
+    def test_reactive_bluetooth_events(self) -> None:
+        plugin = Plugin()
+
+        async def run() -> None:
+            await plugin._main()
+
+            mock_proc = MagicMock()
+            simulated_lines = [
+                b"[CHG] Device AA:BB:CC:DD:EE:FF Connected: yes\n",
+                b"[CHG] Device AA:BB:CC:DD:EE:FF Connected: no\n",
+                b"",
+            ]
+
+            async def readline() -> bytes:
+                if simulated_lines:
+                    return simulated_lines.pop(0)
+                await asyncio.sleep(3600)
+                return b""
+
+            mock_proc.stdout.readline = readline
+            mock_proc.terminate = MagicMock()
+
+            async def wait() -> int:
+                return 0
+
+            mock_proc.wait = wait
+
+            with patch("shutil.which", return_value="/usr/bin/dbus-monitor"), \
+                 patch("asyncio.create_subprocess_exec", return_value=mock_proc), \
+                 patch.object(plugin, "trigger_connect") as mock_connect, \
+                 patch.object(plugin.conn, "disconnect") as mock_disconnect:
+
+                async def connect_side_effect(target_mac: str | None = None) -> dict[str, Any]:
+                    plugin.conn.connected = True
+                    plugin.conn.mac = target_mac or "AA:BB:CC:DD:EE:FF"
+                    return {}
+
+                mock_connect.side_effect = connect_side_effect
+                mock_disconnect.return_value = None
+                plugin.conn.connected = False
+
+                await plugin.set_ui_active(True)
+                await asyncio.sleep(0.05)
+
+                assert mock_connect.called
+                assert mock_disconnect.called
+
+                await plugin.set_ui_active(False)
+
+            await plugin._unload()
+
+        asyncio.run(run())
+
+    def test_reactive_dbus_monitor_format(self) -> None:
+        plugin = Plugin()
+
+        async def run() -> None:
+            await plugin._main()
+
+            mock_proc = MagicMock()
+            sig_header = (
+                b"signal path=/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF; "
+                b"interface=org.freedesktop.DBus.Properties; member=PropertiesChanged\n"
+            )
+            simulated_lines = [
+                sig_header,
+                b'   string "Connected"\n',
+                b"   variant boolean true\n",
+                sig_header,
+                b'   string "Connected"\n',
+                b"   variant boolean false\n",
+                b"",
+            ]
+
+            async def readline() -> bytes:
+                if simulated_lines:
+                    return simulated_lines.pop(0)
+                await asyncio.sleep(3600)
+                return b""
+
+            mock_proc.stdout.readline = readline
+            mock_proc.terminate = MagicMock()
+
+            async def wait() -> int:
+                return 0
+
+            mock_proc.wait = wait
+
+            with patch("shutil.which", return_value="/usr/bin/dbus-monitor"), \
+                 patch("asyncio.create_subprocess_exec", return_value=mock_proc), \
+                 patch.object(plugin, "trigger_connect") as mock_connect, \
+                 patch.object(plugin.conn, "disconnect") as mock_disconnect:
+
+                async def connect_side_effect(target_mac: str | None = None) -> dict[str, Any]:
+                    plugin.conn.connected = True
+                    plugin.conn.mac = target_mac or "AA:BB:CC:DD:EE:FF"
+                    return {}
+
+                mock_connect.side_effect = connect_side_effect
+                mock_disconnect.return_value = None
+                plugin.conn.connected = False
+
+                await plugin.set_ui_active(True)
+                await asyncio.sleep(0.05)
+
+                assert mock_connect.called
+                assert mock_disconnect.called
+
+                await plugin.set_ui_active(False)
+
+            await plugin._unload()
+
+        asyncio.run(run())
+
+
+class TestLogging:
+    """Tests for logging configuration and verbosity settings."""
+
+    def test_default_log_level_is_info(self) -> None:
+        import logging
+        import os
+
+        from backend.logger import _get_log_level
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert _get_log_level() == logging.INFO
+
+    def test_log_level_env_override(self) -> None:
+        import logging
+        import os
+
+        from backend.logger import _get_log_level
+
+        with patch.dict(os.environ, {"XMDECK_LOG_LEVEL": "WARNING"}):
+            assert _get_log_level() == logging.WARNING
+
+    def test_debug_flag_env_override(self) -> None:
+        import logging
+        import os
+
+        from backend.logger import _get_log_level
+
+        with patch.dict(os.environ, {"XMDECK_DEBUG": "1"}):
+            assert _get_log_level() == logging.DEBUG
+        with patch.dict(os.environ, {"XMDECK_DEBUG": "true"}):
+            assert _get_log_level() == logging.DEBUG

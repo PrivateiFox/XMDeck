@@ -12,7 +12,7 @@
 - **🗣️ Focus on Voice:** Toggle voice enhancement in Ambient Sound mode to hear speech while filtering background noise.
 - **💬 Speak-to-Chat:** Toggle Sony's automatic speech detection directly from the menu.
 - **🔄 Bidirectional Reactive Sync:** Setting changes made via the physical headphone buttons or touch sensors sync back to the Steam Deck UI in real time.
-- **⚡ Zero-Config Auto Discovery:** Automatically discovers and connects to paired Sony headphones over Bluetooth Classic RFCOMM.
+- **⚡ On-Demand Connection & Zero-Config Discovery:** Automatically connects to paired Sony headphones when you open the XMDeck menu and releases the RFCOMM channel when closed, allowing your phone app or other devices to connect freely without conflicts.
 - **🛡️ Bulletproof Dual-Stack RFCOMM:** Built with an automatic system-bridge fallback to ensure 100% reliable RFCOMM socket communication across all SteamOS and Decky Loader environments.
 
 ---
@@ -47,33 +47,15 @@ Tested and confirmed compatible with Sony MDR protocol:
 
 ## 🚀 Installation
 
-### Option 1: One-Line Install / Update (Steam Deck Terminal)
-
-Open Konsole on your Steam Deck (Desktop Mode or via SSH) and run:
-
-```bash
-curl -L -s https://github.com/PrivateiFox/XMDeck/releases/latest/download/XMDeck.zip -o /tmp/XMDeck.zip && \
-sudo rm -rf /home/deck/homebrew/plugins/XMDeck && \
-sudo unzip -q -o /tmp/XMDeck.zip -d /home/deck/homebrew/plugins/ && \
-rm -f /tmp/XMDeck.zip && \
-sudo systemctl restart plugin_loader
-```
-
-### Option 2: Manual Zip Installation
-
-1. Download the latest `XMDeck.zip` from [Releases](https://github.com/PrivateiFox/XMDeck/releases).
-2. Extract the archive into `/home/deck/homebrew/plugins/` (e.g., via Ark or terminal `unzip XMDeck.zip -d /home/deck/homebrew/plugins/`).
-3. Restart Decky Loader:
-   ```bash
-   sudo systemctl restart plugin_loader
-   ```
-
-### Option 3: Install via Decky Loader Developer Menu
+You can install XMDeck directly on your Steam Deck via Decky Loader:
 
 1. On your Steam Deck, open Quick Access Menu (`•••`) -> **Decky Loader** -> **Settings** (⚙️).
 2. Under **General**, toggle **Enable Developer Mode**.
 3. Under the **Developer** tab, select **Install Plugin from URL**.
-4. Enter URL: `https://github.com/PrivateiFox/XMDeck/releases/latest/download/XMDeck.zip`
+4. Enter URL:
+   ```
+   https://github.com/PrivateiFox/XMDeck/releases/latest/download/XMDeck.zip
+   ```
 
 ---
 
@@ -93,14 +75,6 @@ XMDeck implements a complete, native Python protocol engine:
 
 ### "Port Busy (errno 16) / Refused (errno 111)"
 Sony headphones only allow **one** active MDR protocol controller connection at a time. If you have the Sony Headphones Connect app open on your phone, disconnect the app or turn off Bluetooth on your phone temporarily so the Steam Deck can claim the RFCOMM channel.
-
-### Taking Screenshots on Steam Deck
-- **In Gaming Mode:** Press **`STEAM` + `R1`**. A notification will appear in the lower-right corner.
-- **Locating Screenshots:** In Desktop Mode, screenshots are saved in:
-  ```bash
-  find ~/.local/share/Steam/userdata/ -name "*.jpg"
-  ```
-  Or access them directly from the **Media** tab in the Steam menu.
 
 ---
 
@@ -130,4 +104,3 @@ uv run mypy backend/ tests/ main.py
 ## 📄 License
 
 Distributed under the [GNU General Public License v3.0](LICENSE).
-

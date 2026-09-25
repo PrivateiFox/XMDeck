@@ -253,6 +253,37 @@ def scan_all_bluetooth_devices() -> list[dict[str, Any]]:
     return results
 
 
+def quick_find_connected_sony_device() -> tuple[str | None, str | None]:
+    """Fast non-blocking check for connected Sony devices using a single bluetoothctl call.
+
+    Avoids the multi-step full BlueZ scan if a Sony device is already reported connected.
+    """
+    try:
+        proc = subprocess.run(
+            ["bluetoothctl", "devices", "Connected"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            for line in proc.stdout.splitlines():
+                parts = line.strip().split(maxsplit=2)
+                if len(parts) >= 3 and parts[0] == "Device" and MAC_REGEX.match(parts[1]):
+                    mac = parts[1]
+                    name = parts[2]
+                    name_upper = name.upper()
+                    is_le = name.strip().upper().startswith(("LE_", "LE-", "LE "))
+                    is_sony = any(kw in name_upper for kw in SONY_NAME_KEYWORDS)
+                    if is_sony and not is_le:
+                        logger.debug("Quick-check found connected Sony device: %s (%s)", name, mac)
+                        return mac, name
+    except Exception as e:
+        logger.debug("quick_find_connected_sony_device check failed: %s", e)
+
+    return None, None
+
+
 def find_connected_sony_device() -> tuple[str | None, str | None]:
     """Scan connected Bluetooth devices and locate the best candidate Sony WH/WF headphones.
 
@@ -276,25 +307,25 @@ def find_connected_sony_device() -> tuple[str | None, str | None]:
     # Rank 1: Connected Sony Classic Bluetooth (Not LE) -> Highest priority
     for d in devices:
         if d["connected"] and d["is_sony"] and not d["is_le"]:
-            logger.info("Found connected Sony Classic device: %s (%s)", d["name"], d["mac"])
+            logger.debug("Found connected Sony Classic device: %s (%s)", d["name"], d["mac"])
             return d["mac"], d["name"]
 
     # Rank 2: Connected Sony LE (Fallback if no separate Classic entry listed)
     for d in devices:
         if d["connected"] and d["is_sony"] and d["is_le"]:
-            logger.info("Found connected Sony LE device: %s (%s)", d["name"], d["mac"])
+            logger.debug("Found connected Sony LE device: %s (%s)", d["name"], d["mac"])
             return d["mac"], d["name"]
 
     # Rank 3: Connected audio headphone device that might be Sony with a custom name
     for d in devices:
         if d["connected"] and not d["is_le"] and ("headphone" in d["icon"] or "audio" in d["icon"]):
-            logger.info("Found connected audio headphone candidate: %s (%s)", d["name"], d["mac"])
+            logger.debug("Found connected audio headphone candidate: %s (%s)", d["name"], d["mac"])
             return d["mac"], d["name"]
 
     # Rank 4: Paired Sony Classic device (in case BlueZ connection status is delayed)
     for d in devices:
         if d["is_sony"] and not d["is_le"]:
-            logger.info("Found paired Sony Classic candidate: %s (%s)", d["name"], d["mac"])
+            logger.debug("Found paired Sony Classic candidate: %s (%s)", d["name"], d["mac"])
             return d["mac"], d["name"]
 
     return None, None

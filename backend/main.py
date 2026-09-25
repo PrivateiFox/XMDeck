@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import re
+import shutil
 from typing import Any
 
 from .connection import (
     SonyConnection,
     find_connected_sony_device,
     is_rfcomm_supported,
+    quick_find_connected_sony_device,
     scan_all_bluetooth_devices,
 )
 from .logger import logger, setup_logging
@@ -28,29 +32,29 @@ class Plugin:
     def __init__(self) -> None:
         setup_logging()
         self.conn = SonyConnection()
-        self._poll_task: asyncio.Task[None] | None = None
+        self._monitor_task: asyncio.Task[None] | None = None
+        self._fallback_task: asyncio.Task[None] | None = None
+        self._monitor_proc: asyncio.subprocess.Process | None = None
         self._running: bool = False
+        self._ui_active: bool = False
 
     async def _main(self) -> None:
-        """Decky plugin entry point: initializes device discovery and event listeners."""
+        """Decky plugin entry point: initializes event listeners."""
         self._running = True
         logger.info("XMDeck plugin starting...")
 
         # Hook state updates to emit events to frontend
         self.conn.add_listener(self._on_state_updated)
 
-        # Launch auto-discovery loop
-        self._poll_task = asyncio.create_task(self._auto_discovery_loop())
+        # Connection is established on-demand when user opens the plugin UI tab
 
     async def _unload(self) -> None:
         """Decky plugin teardown."""
         self._running = False
+        self._ui_active = False
         logger.info("XMDeck plugin unloading...")
 
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
-            self._poll_task = None
-
+        await self._stop_bluetooth_monitor()
         await self.conn.disconnect()
 
     def _on_state_updated(self, event_type: str, data: Any) -> None:
@@ -68,49 +72,175 @@ class Plugin:
                 )
             )
 
-    async def _auto_discovery_loop(self) -> None:
-        """Periodically scan for connected Sony headphones and establish RFCOMM link."""
-        while self._running:
+    async def set_ui_active(self, active: bool) -> bool:
+        """Handle UI tab visibility changes to only hold RFCOMM while viewing XMDeck."""
+        logger.info("set_ui_active called: %s (current: %s)", active, self._ui_active)
+        self._ui_active = active
+        if active:
+            # Tab opened: start reactive event monitor
+            if self._monitor_task is None or self._monitor_task.done():
+                self._monitor_task = asyncio.create_task(self._start_bluetooth_monitor())
+        else:
+            # Tab closed / unfocused: release monitor and RFCOMM connection immediately
+            await self._stop_bluetooth_monitor()
+            if self.conn.connected:
+                logger.info("UI closed: disconnecting RFCOMM to release socket")
+                await self.conn.disconnect()
+
+        return True
+
+    async def _stop_bluetooth_monitor(self) -> None:
+        """Clean up background monitor process, fallback loop, and reader task."""
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._fallback_task
+            self._fallback_task = None
+
+        if self._monitor_task and not self._monitor_task.done():
+            self._monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._monitor_task
+            self._monitor_task = None
+
+        if self._monitor_proc:
+            with contextlib.suppress(Exception):
+                self._monitor_proc.terminate()
+                await self._monitor_proc.wait()
+            self._monitor_proc = None
+
+    async def _fallback_loop(self) -> None:
+        """Lightweight safety fallback ping while UI is open and headphones are disconnected."""
+        while self._running and self._ui_active:
             try:
-                if not self.conn.connected:
-                    mac, name = await asyncio.get_running_loop().run_in_executor(
-                        None, find_connected_sony_device
-                    )
-                    if not mac:
-                        # Fallback: check all paired Sony Classic devices
-                        devs = await asyncio.get_running_loop().run_in_executor(
-                            None, scan_all_bluetooth_devices
-                        )
-                        for d in devs:
-                            if d.get("is_sony") and not d.get("is_le"):
-                                mac = d["mac"]
-                                name = d.get("name")
-                                break
+                # Sleep 5 seconds between fast safety checks
+                await asyncio.sleep(5.0)
 
-                    if mac:
-                        logger.info(
-                            "Found candidate Sony device: %s (%s). Attempting connect...",
-                            name,
-                            mac,
-                        )
-                        connected = await self.conn.connect(mac, name=name)
-                        if connected:
-                            logger.info(
-                                "Connected successfully to %s on channel %s",
-                                mac,
-                                self.conn.channel,
-                            )
-                        else:
-                            logger.warning("Failed to connect to %s: %s", mac, self.conn.last_error)
-
-                # Wait before next poll interval: 5s if connected, 4s if trying to connect
-                await asyncio.sleep(5.0 if self.conn.connected else 4.0)
+                if self._ui_active and not self.conn.connected:
+                    logger.debug("Running lightweight safety check for connected Sony device...")
+                    await self.trigger_connect()
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.exception("Error in auto-discovery loop: %s", e)
-                await asyncio.sleep(4.0)
+                logger.debug("Error in safety fallback loop: %s", e)
+
+    async def _start_bluetooth_monitor(self) -> None:
+        """Stream BlueZ events reactively with dbus-monitor and a lightweight safety fallback."""
+        # Initial fast check in case headphones are already connected
+        if not self.conn.connected and self._ui_active:
+            await self.trigger_connect()
+
+        # Launch safety fallback loop
+        if self._fallback_task is None or self._fallback_task.done():
+            self._fallback_task = asyncio.create_task(self._fallback_loop())
+
+        # Determine monitor command
+        cmd: list[str] | None = None
+        if shutil.which("dbus-monitor"):
+            cmd = [
+                "dbus-monitor",
+                "--system",
+                (
+                    "type='signal',sender='org.bluez',"
+                    "interface='org.freedesktop.DBus.Properties',"
+                    "member='PropertiesChanged'"
+                ),
+            ]
+        elif shutil.which("bluetoothctl"):
+            cmd = ["bluetoothctl"]
+
+        if not cmd:
+            logger.debug("No streaming monitor CLI available, relying on safety loop")
+            return
+
+        # Stream real-time events while tab is open
+        while self._running and self._ui_active:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                self._monitor_proc = proc
+
+                assert proc.stdout is not None
+                current_mac: str | None = None
+                current_prop: str | None = None
+
+                while self._running and self._ui_active:
+                    line_bytes = await proc.stdout.readline()
+                    if not line_bytes:
+                        break  # EOF / monitor exited
+
+                    line = line_bytes.decode("utf-8", errors="replace").strip()
+
+                    # Reset property tracker on new signal header
+                    if line.startswith("signal "):
+                        current_prop = None
+                        path_match = re.search(r"dev_([0-9A-Fa-f]{2}_){5}[0-9A-Fa-f]{2}", line)
+                        if path_match:
+                            current_mac = path_match.group(0)[4:].replace("_", ":")
+
+                    # Also match standard MAC format: AA:BB:CC:DD:EE:FF
+                    mac_match = re.search(r"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})", line)
+                    if mac_match:
+                        current_mac = mac_match.group(0)
+
+                    # Track current property key in multiline D-Bus output
+                    if 'string "Connected"' in line:
+                        current_prop = "Connected"
+                    elif 'string "ServicesResolved"' in line:
+                        current_prop = "ServicesResolved"
+                    elif line.startswith('string "') or line.startswith("dict entry"):
+                        current_prop = None
+
+                    # Connection signal
+                    is_connect = (
+                        "Connected: yes" in line
+                        or (
+                            current_prop in ("Connected", "ServicesResolved")
+                            and "boolean true" in line
+                        )
+                    )
+                    if is_connect and current_mac and not self.conn.connected and self._ui_active:
+                        logger.info(
+                            "Reactive BlueZ connect signal: %s. Checking...",
+                            current_mac,
+                        )
+                        await self.trigger_connect(target_mac=current_mac)
+
+                    # Disconnection signal
+                    is_disconnect = (
+                        "Connected: no" in line
+                        or (current_prop == "Connected" and "boolean false" in line)
+                    )
+                    if is_disconnect and current_mac and self.conn.connected:
+                        if self.conn.mac and current_mac.lower() == self.conn.mac.lower():
+                            logger.info(
+                                "Reactive BlueZ disconnect signal: %s",
+                                current_mac,
+                            )
+                            await self.conn.disconnect()
+
+            except (FileNotFoundError, OSError) as e:
+                logger.debug("Streaming monitor unavailable: %s", e)
+                break
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.exception("Error in streaming monitor: %s", e)
+                await asyncio.sleep(2.0)
+            finally:
+                if self._monitor_proc:
+                    with contextlib.suppress(Exception):
+                        self._monitor_proc.terminate()
+                        await self._monitor_proc.wait()
+                    self._monitor_proc = None
+
+            if self._running and self._ui_active:
+                await asyncio.sleep(2.0)
 
     # -----------------------------------------------------------------------
     # JSON-RPC Methods exposed to Frontend
@@ -168,24 +298,33 @@ class Plugin:
         await self.conn.disconnect()
         return True
 
-    async def trigger_connect(self) -> dict[str, Any]:
-        """Trigger an immediate scan and connection attempt to Sony headphones."""
-        logger.info("trigger_connect invoked from UI")
+    async def trigger_connect(self, target_mac: str | None = None) -> dict[str, Any]:
+        """Trigger an immediate connection attempt to Sony headphones."""
+        logger.debug("trigger_connect invoked (target_mac=%s)", target_mac)
         loop = asyncio.get_running_loop()
-        mac, name = await loop.run_in_executor(None, find_connected_sony_device)
+
+        # Try fast 10ms check first
+        mac, name = await loop.run_in_executor(None, quick_find_connected_sony_device)
+
+        # Fallback to full device scan if quick check didn't locate candidate
         if not mac:
+            mac, name = await loop.run_in_executor(None, find_connected_sony_device)
+
+        if not mac and target_mac:
             devs = await loop.run_in_executor(None, scan_all_bluetooth_devices)
             for d in devs:
-                if d.get("is_sony") and not d.get("is_le"):
+                is_match = d["mac"].lower() == target_mac.lower()
+                if is_match and d.get("is_sony") and not d.get("is_le"):
                     mac = d["mac"]
                     name = d.get("name")
                     break
 
-        if mac:
+        if mac and (self._ui_active or self.conn.connected):
             logger.info("trigger_connect: Found Sony device %s (%s). Connecting...", name, mac)
             await self.conn.connect(mac, name=name)
         else:
-            self.conn.last_error = "No Sony headphones found in Bluetooth scan"
+            if not self.conn.connected:
+                self.conn.last_error = "No Sony headphones found in Bluetooth scan"
 
         return self._build_connection_status_dict()
 
